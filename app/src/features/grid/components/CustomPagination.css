@@ -1,0 +1,132 @@
+/* ========== CustomPagination 自定义分页栏 ========== */
+
+.custom-pagination {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.custom-pagination-meta {
+    font-size: 13px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    margin-right: 4px;
+}
+
+.custom-pagination-pages {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.custom-pagination-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 28px;
+    height: 28px;
+    padding: 0 6px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-panel);
+    color: var(--text-main);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.12s ease;
+    user-select: none;
+}
+
+.custom-pagination-btn:hover:not(:disabled) {
+    border-color: var(--primary);
+    color: var(--primary);
+    background: var(--primary-bg);
+}
+
+.custom-pagination-btn:disabled {
+    color: var(--text-muted);
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+.custom-pagination-btn--active {
+    background: var(--primary);
+    color: #fff;
+    border-color: var(--primary);
+    font-weight: 600;
+}
+
+.custom-pagination-btn--active:hover:not(:disabled) {
+    background: var(--primary-hover);
+    color: #fff;
+    border-color: var(--primary-hover);
+}
+
+.custom-pagination-ellipsis {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 28px;
+    height: 28px;
+    color: var(--text-muted);
+    font-size: 13px;
+    user-select: none;
+}
+
+.custom-pagination-size {
+    height: 28px;
+    padding: 0 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-panel);
+    color: var(--text-main);
+    font-size: 13px;
+    cursor: pointer;
+    outline: none;
+    transition: border-color 0.12s ease;
+    appearance: auto;
+}
+
+.custom-pagination-size:hover,
+.custom-pagination-size:focus {
+    border-color: var(--primary);
+}
+
+.custom-pagination-jump {
+    width: 72px;
+    height: 28px;
+    padding: 0 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    background: var(--bg-panel);
+    color: var(--text-main);
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.12s ease;
+}
+
+.custom-pagination-jump:focus {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 20%, transparent);
+}
+
+.custom-pagination-jump::placeholder {
+    color: var(--text-muted);
+}
+
+/* Hide spinner for number input */
+.custom-pagination-jump::-webkit-inner-spin-button,
+.custom-pagination-jump::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.custom-pagination-jump[type="number"] {
+    appearance: textfield;
+    -moz-appearance: textfield;
+}
+
+/* dark mode */
+[data-theme="dark"] .custom-pagination-size {
+    background: color-mix(in srgb, var(--bg-panel) 80%, var(--bg-app) 20%);
+}

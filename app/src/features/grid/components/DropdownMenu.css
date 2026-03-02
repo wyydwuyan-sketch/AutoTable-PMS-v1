@@ -1,0 +1,95 @@
+/* ========== DropdownMenu 自定义下拉菜单 ========== */
+
+.dropdown-menu-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1049;
+}
+
+.dropdown-menu {
+    position: fixed;
+    z-index: 1050;
+    min-width: 160px;
+    max-width: 280px;
+    padding: 4px;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-panel);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.1), 0 2px 6px rgba(0, 0, 0, 0.06);
+    animation: dropdown-in 0.14s ease-out;
+}
+
+@keyframes dropdown-in {
+    from {
+        opacity: 0;
+        transform: translateY(-4px) scale(0.97);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+.dropdown-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    border: none;
+    background: transparent;
+    color: var(--text-main);
+    font-size: 13px;
+    line-height: 1.4;
+    padding: 7px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.12s ease;
+    white-space: nowrap;
+}
+
+.dropdown-menu-item:hover {
+    background: var(--bg-hover);
+}
+
+.dropdown-menu-item:active {
+    background: var(--bg-active);
+}
+
+.dropdown-menu-item--disabled {
+    color: var(--text-muted);
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+.dropdown-menu-item--disabled:hover {
+    background: transparent;
+}
+
+.dropdown-menu-item--danger {
+    color: #ef4444;
+}
+
+.dropdown-menu-item--danger:hover {
+    background: #fef2f2;
+}
+
+.dropdown-menu-divider {
+    height: 1px;
+    margin: 4px 8px;
+    background: var(--border-color);
+}
+
+/* dark mode */
+[data-theme="dark"] .dropdown-menu {
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35), 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+[data-theme="dark"] .dropdown-menu-item--danger {
+    color: #fca5a5;
+}
+
+[data-theme="dark"] .dropdown-menu-item--danger:hover {
+    background: rgba(239, 68, 68, 0.12);
+}

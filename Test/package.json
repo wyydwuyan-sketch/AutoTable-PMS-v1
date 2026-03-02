@@ -1,0 +1,16 @@
+{
+  "name": "autotable-ui-e2e",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "test:ui": "playwright test --headed",
+    "test:ui:headed": "playwright test --headed",
+    "test:ui:headless": "playwright test",
+    "test:ui:list": "playwright test --list",
+    "install:browsers": "playwright install"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.52.0"
+  }
+}

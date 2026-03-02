@@ -1,0 +1,102 @@
+.vsw-root {
+  display: grid;
+  gap: 14px;
+}
+
+.vsw-meta {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.vsw-section {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-card, #fff);
+}
+
+.vsw-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.vsw-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.vsw-muted {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.vsw-field-list {
+  display: grid;
+  gap: 8px;
+  max-height: 220px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.vsw-field-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  font-size: 13px;
+}
+
+.vsw-field-name {
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.vsw-field-type {
+  color: var(--text-secondary);
+}
+
+.vsw-empty {
+  border: 1px dashed var(--border-color);
+  border-radius: 8px;
+  padding: 14px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.vsw-table {
+  display: grid;
+  gap: 8px;
+}
+
+.vsw-table-head,
+.vsw-table-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px minmax(180px, 240px);
+  gap: 8px;
+  align-items: center;
+}
+
+.vsw-table-head {
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 6px;
+}
+
+.vsw-table-row {
+  min-height: 34px;
+}
+
+@media (max-width: 760px) {
+  .vsw-table-head,
+  .vsw-table-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+}
