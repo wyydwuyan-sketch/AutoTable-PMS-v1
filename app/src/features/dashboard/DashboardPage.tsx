@@ -50,6 +50,9 @@ export function DashboardPage() {
           <button className="cm-btn" onClick={() => navigate('/b/base_1/t/tbl_1/v/viw_1')}>
             ← 返回表格
           </button>
+          <button className="cm-btn" onClick={() => navigate('/integrations')}>
+            接口管理
+          </button>
           <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>首页大屏 / 只读预览</span>
         </div>
         <h4 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>

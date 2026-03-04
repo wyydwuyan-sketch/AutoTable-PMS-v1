@@ -8,9 +8,6 @@ from pydantic import BaseModel, ConfigDict, Field
 FieldType = Literal["text", "number", "date", "singleSelect", "multiSelect", "checkbox", "attachment", "image", "member"]
 ViewType = Literal["grid", "form", "kanban"]
 FilterLogic = Literal["and", "or"]
-WidgetType = Literal["metric", "bar", "line", "pie", "table"]
-AggregationType = Literal["count", "sum", "avg"]
-DateBucket = Literal["day", "week", "month", "quarter", "year"]
 
 
 class FieldOptionOut(BaseModel):
@@ -300,71 +297,6 @@ class ViewPermissionPatchIn(BaseModel):
     items: list[ViewPermissionItemIn] = Field(default_factory=list)
 
 
-class DashboardWidgetLayout(BaseModel):
-    x: int = 0
-    y: int = 0
-    w: int = 4
-    h: int = 3
-
-
-class DashboardTableOut(BaseModel):
-    id: str
-    baseId: str
-    name: str
-
-
-class DashboardWidgetCreateIn(BaseModel):
-    type: WidgetType
-    title: str = "未命名组件"
-    tableId: str | None = None
-    fieldIds: list[str] = Field(default_factory=list)
-    aggregation: AggregationType = "count"
-    groupFieldId: str | None = None
-    layout: DashboardWidgetLayout = Field(default_factory=DashboardWidgetLayout)
-    config: dict[str, Any] = Field(default_factory=dict)
-
-
-class DashboardWidgetPatchIn(BaseModel):
-    title: str | None = None
-    tableId: str | None = None
-    fieldIds: list[str] | None = None
-    aggregation: AggregationType | None = None
-    groupFieldId: str | None = None
-    layout: DashboardWidgetLayout | None = None
-    config: dict[str, Any] | None = None
-    sortOrder: int | None = None
-
-
-class DashboardWidgetOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: str
-    type: WidgetType
-    title: str
-    tableId: str | None = None
-    fieldIds: list[str] = Field(default_factory=list)
-    aggregation: AggregationType = "count"
-    groupFieldId: str | None = None
-    layout: DashboardWidgetLayout = Field(default_factory=DashboardWidgetLayout)
-    config: dict[str, Any] = Field(default_factory=dict)
-    sortOrder: int = 0
-    createdAt: str
-
-
-class DashboardOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: str
-    name: str
-    widgets: list[DashboardWidgetOut] = Field(default_factory=list)
-    createdAt: str
-
-
-class WidgetDataRequest(BaseModel):
-    aggregation: AggregationType | None = None
-    groupFieldId: str | None = None
-    dateBucket: DateBucket | None = None
-    limit: int = Field(default=20, ge=1, le=500)
-
-
 class ReferenceMemberOut(BaseModel):
     userId: str
     username: str
@@ -487,3 +419,134 @@ class KanbanMoveIn(BaseModel):
     fromStatusOptionId: str | None = None
     toStatusOptionId: str
     expectedVersion: int | None = None
+
+
+ConnectorMode = Literal["config", "plugin"]
+HttpMethod = Literal["GET", "POST"]
+ConnectorAuthType = Literal["none", "bearer", "basic", "api_key"]
+ExecutionStatus = Literal["running", "success", "failed"]
+
+
+class CredentialCreateIn(BaseModel):
+    name: str
+    authType: ConnectorAuthType
+    secret: str
+
+
+class CredentialOut(BaseModel):
+    id: str
+    name: str
+    authType: ConnectorAuthType
+    maskedSecret: str
+    createdAt: str
+
+
+class FieldMappingIn(BaseModel):
+    sourceKey: str
+    targetFieldId: str
+    targetFieldLabel: str | None = None
+    transform: str | None = None
+
+
+class FieldMappingOut(BaseModel):
+    id: str
+    sourceKey: str
+    targetFieldId: str
+    targetFieldLabel: str
+    transform: str | None = None
+
+
+class ConnectorScheduleIn(BaseModel):
+    cronExpr: str = "0 8 * * *"
+    isEnabled: bool = True
+
+
+class ConnectorScheduleOut(BaseModel):
+    cronExpr: str
+    isEnabled: bool
+    nextRunAt: str | None = None
+
+
+class ApiConnectorCreateIn(BaseModel):
+    name: str
+    description: str | None = None
+    tableId: str
+    mode: ConnectorMode = "config"
+    method: HttpMethod = "GET"
+    url: str
+    authType: ConnectorAuthType = "none"
+    credentialId: str | None = None
+    requestParams: dict[str, Any] = Field(default_factory=dict)
+    requestHeaders: dict[str, Any] = Field(default_factory=dict)
+    responsePath: str | None = None
+    isEnabled: bool = True
+    fieldMappings: list[FieldMappingIn] = Field(default_factory=list)
+    schedule: ConnectorScheduleIn = Field(default_factory=ConnectorScheduleIn)
+
+
+class ApiConnectorPatchIn(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    tableId: str | None = None
+    mode: ConnectorMode | None = None
+    method: HttpMethod | None = None
+    url: str | None = None
+    authType: ConnectorAuthType | None = None
+    credentialId: str | None = None
+    requestParams: dict[str, Any] | None = None
+    requestHeaders: dict[str, Any] | None = None
+    responsePath: str | None = None
+    isEnabled: bool | None = None
+    fieldMappings: list[FieldMappingIn] | None = None
+
+
+class ApiConnectorOut(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    tableId: str
+    tableName: str
+    mode: ConnectorMode
+    method: HttpMethod
+    url: str
+    authType: ConnectorAuthType
+    credentialId: str | None = None
+    requestParams: dict[str, Any] = Field(default_factory=dict)
+    requestHeaders: dict[str, Any] = Field(default_factory=dict)
+    responsePath: str | None = None
+    isEnabled: bool = True
+    createdAt: str
+    updatedAt: str
+    lastRunAt: str | None = None
+    lastStatus: ExecutionStatus | None = None
+    totalRuns: int = 0
+    successRuns: int = 0
+    fieldMappings: list[FieldMappingOut] = Field(default_factory=list)
+    schedule: ConnectorScheduleOut
+
+
+class ExecutionLogOut(BaseModel):
+    id: str
+    connectorId: str
+    connectorName: str
+    startedAt: str
+    finishedAt: str | None = None
+    status: ExecutionStatus
+    rowsWritten: int
+    errorMsg: str | None = None
+    rawLog: str | None = None
+
+
+class ConnectorRunResultOut(BaseModel):
+    status: Literal["success", "failed"]
+    rowsWritten: int
+    errorMsg: str | None = None
+
+
+class IntegrationStatsOut(BaseModel):
+    totalConnectors: int = 0
+    enabledConnectors: int = 0
+    runsToday: int = 0
+    successRate: int = 0
+    failureCount: int = 0
+    runningCount: int = 0

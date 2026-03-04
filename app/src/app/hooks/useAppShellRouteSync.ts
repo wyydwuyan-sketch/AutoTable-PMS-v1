@@ -24,7 +24,6 @@ interface UseAppShellRouteSyncParams {
   isComponentsRoute: boolean
   isShowcaseRoute: boolean
   isWorkflowRoute: boolean
-  isDashboardConfigRoute: boolean
   isMembersRoute: boolean
   isAiModelsRoute: boolean
 }
@@ -44,7 +43,6 @@ export function useAppShellRouteSync({
   isComponentsRoute,
   isShowcaseRoute,
   isWorkflowRoute,
-  isDashboardConfigRoute,
   isMembersRoute,
   isAiModelsRoute,
 }: UseAppShellRouteSyncParams) {
@@ -116,7 +114,6 @@ export function useAppShellRouteSync({
       isComponentsRoute ||
       isShowcaseRoute ||
       isWorkflowRoute ||
-      isDashboardConfigRoute ||
       isMembersRoute ||
       isAiModelsRoute
     if (isConfigRoute) return
@@ -126,7 +123,6 @@ export function useAppShellRouteSync({
   }, [
     isAiModelsRoute,
     isComponentsRoute,
-    isDashboardConfigRoute,
     isMembersRoute,
     isShowcaseRoute,
     isViewManageRoute,
@@ -143,7 +139,6 @@ export function useAppShellRouteSync({
       !isComponentsRoute &&
       !isShowcaseRoute &&
       !isWorkflowRoute &&
-      !isDashboardConfigRoute &&
       !isMembersRoute &&
       !isAiModelsRoute
     ) {
@@ -160,7 +155,6 @@ export function useAppShellRouteSync({
     canViewBusinessConfig,
     isAiModelsRoute,
     isComponentsRoute,
-    isDashboardConfigRoute,
     isMembersRoute,
     isShowcaseRoute,
     isViewManageRoute,

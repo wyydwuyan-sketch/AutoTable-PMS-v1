@@ -1,11 +1,10 @@
-import { DashboardOutlined, DownOutlined, MoonOutlined, SunOutlined } from '@ant-design/icons'
+import { DownOutlined, MoonOutlined, SunOutlined } from '@ant-design/icons'
 import { DropdownMenu } from '../../features/grid/components/DropdownMenu'
 import type { DropdownMenuItem } from '../../features/grid/components/DropdownMenu'
 
 interface AppShellHeaderProps {
   currentTenantName?: string | null
   isDarkMode: boolean
-  onOpenDashboard: () => void
   onToggleThemeMode: () => void
   userMenuItems: DropdownMenuItem[]
   onUserMenuSelect: (key: string) => void
@@ -15,7 +14,6 @@ interface AppShellHeaderProps {
 export function AppShellHeader({
   currentTenantName,
   isDarkMode,
-  onOpenDashboard,
   onToggleThemeMode,
   userMenuItems,
   onUserMenuSelect,
@@ -50,12 +48,6 @@ export function AppShellHeader({
         </div>
       </div>
       <div className="app-shell-header-right">
-        <button className="cm-btn" onClick={onOpenDashboard}>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-            <DashboardOutlined />
-            <span>大屏</span>
-          </span>
-        </button>
         <button
           className="cm-btn"
           onClick={onToggleThemeMode}

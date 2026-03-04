@@ -51,6 +51,10 @@ class TableModel(Base):
         back_populates="table",
         cascade="all, delete-orphan",
     )
+    api_connectors: Mapped[list["ApiConnectorModel"]] = relationship(
+        back_populates="table",
+        cascade="all, delete-orphan",
+    )
 
 
 class ViewModel(Base):
@@ -130,11 +134,12 @@ class TenantModel(Base):
     table_permissions: Mapped[list["TablePermissionModel"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
     view_permissions: Mapped[list["ViewPermissionModel"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
     users_with_default: Mapped[list["UserModel"]] = relationship(back_populates="default_tenant")
-    dashboards: Mapped[list["DashboardModel"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
     workflow_configs: Mapped[list["TableWorkflowConfigModel"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
     workflow_transitions: Mapped[list["WorkflowTransitionModel"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
     record_status_logs: Mapped[list["RecordStatusLogModel"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
     view_tabs: Mapped[list["ViewTabModel"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
+    credentials: Mapped[list["CredentialModel"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
+    api_connectors: Mapped[list["ApiConnectorModel"]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
 
 
 class TenantRoleModel(Base):
@@ -317,42 +322,100 @@ class ViewTabModel(Base):
     owner_user: Mapped[UserModel | None] = relationship()
 
 
-class DashboardModel(Base):
-    __tablename__ = "dashboards"
+class CredentialModel(Base):
+    __tablename__ = "credentials"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
-    name: Mapped[str] = mapped_column(String(255), nullable=False, default="首页大屏")
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    auth_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    secret_encrypted: Mapped[str] = mapped_column(String(2048), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
-    tenant: Mapped[TenantModel] = relationship(back_populates="dashboards")
-    widgets: Mapped[list["DashboardWidgetModel"]] = relationship(
-        back_populates="dashboard",
+    tenant: Mapped[TenantModel] = relationship(back_populates="credentials")
+    connectors: Mapped[list["ApiConnectorModel"]] = relationship(back_populates="credential")
+
+
+class ApiConnectorModel(Base):
+    __tablename__ = "api_connectors"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    table_id: Mapped[str] = mapped_column(ForeignKey("tables.id"), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    mode: Mapped[str] = mapped_column(String(32), nullable=False, default="config")
+    method: Mapped[str] = mapped_column(String(16), nullable=False, default="GET")
+    url: Mapped[str] = mapped_column(String(1024), nullable=False)
+    auth_type: Mapped[str] = mapped_column(String(32), nullable=False, default="none")
+    credential_id: Mapped[str | None] = mapped_column(ForeignKey("credentials.id"), index=True, nullable=True)
+    request_params_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    request_headers_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    response_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+
+    tenant: Mapped[TenantModel] = relationship(back_populates="api_connectors")
+    table: Mapped[TableModel] = relationship(back_populates="api_connectors")
+    credential: Mapped[CredentialModel | None] = relationship(back_populates="connectors")
+    field_mappings: Mapped[list["FieldMappingModel"]] = relationship(
+        back_populates="connector",
         cascade="all, delete-orphan",
-        order_by="DashboardWidgetModel.sort_order",
+    )
+    schedule: Mapped["ConnectorScheduleModel | None"] = relationship(
+        back_populates="connector",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+    execution_logs: Mapped[list["ExecutionLogModel"]] = relationship(
+        back_populates="connector",
+        cascade="all, delete-orphan",
+        order_by="ExecutionLogModel.started_at.desc()",
     )
 
 
-class DashboardWidgetModel(Base):
-    __tablename__ = "dashboard_widgets"
+class FieldMappingModel(Base):
+    __tablename__ = "field_mappings"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    dashboard_id: Mapped[str] = mapped_column(ForeignKey("dashboards.id"), index=True, nullable=False)
-    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
-    type: Mapped[str] = mapped_column(String(32), nullable=False)
-    title: Mapped[str] = mapped_column(String(255), nullable=False, default="未命名组件")
-    table_id: Mapped[str | None] = mapped_column(ForeignKey("tables.id"), index=True, nullable=True)
-    field_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
-    aggregation: Mapped[str] = mapped_column(String(32), nullable=False, default="count")
-    group_field_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    layout_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
-    config_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
-    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    connector_id: Mapped[str] = mapped_column(ForeignKey("api_connectors.id"), index=True, nullable=False)
+    source_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    target_field_id: Mapped[str] = mapped_column(ForeignKey("fields.id"), index=True, nullable=False)
+    transform: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
-    dashboard: Mapped[DashboardModel] = relationship(back_populates="widgets")
-    tenant: Mapped[TenantModel] = relationship()
-    table: Mapped[TableModel | None] = relationship()
+    connector: Mapped[ApiConnectorModel] = relationship(back_populates="field_mappings")
+    target_field: Mapped[FieldModel] = relationship()
+
+
+class ConnectorScheduleModel(Base):
+    __tablename__ = "connector_schedules"
+    __table_args__ = (
+        UniqueConstraint("connector_id", name="uq_connector_schedules_connector_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    connector_id: Mapped[str] = mapped_column(ForeignKey("api_connectors.id"), index=True, nullable=False)
+    cron_expr: Mapped[str] = mapped_column(String(128), nullable=False)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    connector: Mapped[ApiConnectorModel] = relationship(back_populates="schedule")
+
+
+class ExecutionLogModel(Base):
+    __tablename__ = "execution_logs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    connector_id: Mapped[str] = mapped_column(ForeignKey("api_connectors.id"), index=True, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
+    rows_written: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_msg: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    raw_log: Mapped[str | None] = mapped_column(String(8192), nullable=True)
+
+    connector: Mapped[ApiConnectorModel] = relationship(back_populates="execution_logs")
 
 
 class AuditLogModel(Base):

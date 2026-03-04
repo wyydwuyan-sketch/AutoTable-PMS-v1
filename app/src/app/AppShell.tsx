@@ -4,11 +4,9 @@ import {
   BankOutlined,
   BgColorsOutlined,
   CloseCircleOutlined,
-  DashboardOutlined,
   DownloadOutlined,
   FilterOutlined,
   LogoutOutlined,
-  PictureOutlined,
   RetweetOutlined,
   SettingOutlined,
   SortAscendingOutlined,
@@ -39,7 +37,6 @@ const configRouteMap: Record<string, string> = {
   'config:components': 'config/components',
   'config:showcase': 'config/showcase',
   'config:workflow': 'config/workflow',
-  'config:dashboard': 'config/dashboard',
   'config:ai-models': 'config/ai-models',
   'config:members': 'config/members',
 }
@@ -160,7 +157,6 @@ export function AppShell() {
   const isComponentsRoute = location.pathname.includes('/config/components')
   const isShowcaseRoute = location.pathname.includes('/config/showcase')
   const isWorkflowRoute = location.pathname.includes('/config/workflow')
-  const isDashboardConfigRoute = location.pathname.includes('/config/dashboard')
   const isMembersRoute = location.pathname.includes('/config/members')
   const isAiModelsRoute = location.pathname.includes('/config/ai-models')
   const isFormSetupRoute = location.pathname.includes('/form-setup')
@@ -171,7 +167,6 @@ export function AppShell() {
     isComponentsRoute ||
     isShowcaseRoute ||
     isWorkflowRoute ||
-    isDashboardConfigRoute ||
     isMembersRoute ||
     isAiModelsRoute ||
     isFormSetupRoute
@@ -197,7 +192,6 @@ export function AppShell() {
     isComponentsRoute,
     isShowcaseRoute,
     isWorkflowRoute,
-    isDashboardConfigRoute,
     isMembersRoute,
     isAiModelsRoute,
   })
@@ -414,12 +408,12 @@ export function AppShell() {
 
   const openConfigRoute = useCallback(
     (key: string) => {
-      if (key === 'config:ai-models') {
-        setToast('模型配置功能待开发，敬请期待。', 'info')
+      if (key === 'config:integrations') {
+        navigate('/integrations')
         return
       }
-      if (key === 'config:page-settings') {
-        setToast('页面设置功能待开发，敬请期待。', 'info')
+      if (key === 'config:ai-models') {
+        setToast('模型配置功能待开发，敬请期待。', 'info')
         return
       }
       const suffix = configRouteMap[key]
@@ -526,10 +520,9 @@ export function AppShell() {
     : []
   const systemConfigItems: SidebarConfigItem[] = canViewBusinessConfig
     ? [
-      { key: 'config:dashboard', icon: <DashboardOutlined />, label: '大屏配置', status: 'enabled' },
+      { key: 'config:integrations', icon: <ApiOutlined />, label: '接口管理', status: 'enabled' },
       { key: 'config:ai-models', icon: <ApiOutlined />, label: '模型配置', status: 'soon' },
       ...(role === 'owner' ? [{ key: 'config:members', icon: <TeamOutlined />, label: '成员管理', status: 'enabled' as const }] : []),
-      { key: 'config:page-settings', icon: <PictureOutlined />, label: '页面设置', status: 'soon' },
     ]
     : []
 
@@ -537,12 +530,10 @@ export function AppShell() {
     ? 'config:views'
     : isComponentsRoute
       ? 'config:components'
-      : isShowcaseRoute
+    : isShowcaseRoute
         ? 'config:showcase'
         : isWorkflowRoute
           ? 'config:workflow'
-          : isDashboardConfigRoute
-            ? 'config:dashboard'
         : isAiModelsRoute
           ? 'config:ai-models'
           : isMembersRoute
@@ -563,7 +554,6 @@ export function AppShell() {
         <AppShellHeader
           currentTenantName={currentTenant?.name}
           isDarkMode={isDarkMode}
-          onOpenDashboard={() => navigate('/dashboard')}
           onToggleThemeMode={toggleThemeMode}
           userMenuItems={userMenuItems}
           onUserMenuSelect={handleUserMenuSelect}

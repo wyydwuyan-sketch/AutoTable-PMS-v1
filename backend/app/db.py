@@ -238,49 +238,6 @@ def ensure_schema_upgrades() -> None:
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_view_permissions_user_id ON view_permissions(user_id)"))
             table_names.add("view_permissions")
 
-        if "dashboards" not in table_names:
-            conn.execute(
-                text(
-                    """
-                    CREATE TABLE dashboards (
-                        id VARCHAR(64) PRIMARY KEY,
-                        tenant_id VARCHAR(64) NOT NULL,
-                        name VARCHAR(255) NOT NULL DEFAULT '首页大屏',
-                        created_at DATETIME NOT NULL
-                    )
-                    """
-                )
-            )
-            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_dashboards_tenant_id ON dashboards(tenant_id)"))
-            table_names.add("dashboards")
-
-        if "dashboard_widgets" not in table_names:
-            conn.execute(
-                text(
-                    """
-                    CREATE TABLE dashboard_widgets (
-                        id VARCHAR(64) PRIMARY KEY,
-                        dashboard_id VARCHAR(64) NOT NULL,
-                        tenant_id VARCHAR(64) NOT NULL,
-                        type VARCHAR(32) NOT NULL,
-                        title VARCHAR(255) NOT NULL DEFAULT '未命名组件',
-                        table_id VARCHAR(64),
-                        field_ids_json JSON NOT NULL DEFAULT '[]',
-                        aggregation VARCHAR(32) NOT NULL DEFAULT 'count',
-                        group_field_id VARCHAR(64),
-                        layout_json JSON NOT NULL DEFAULT '{}',
-                        config_json JSON NOT NULL DEFAULT '{}',
-                        sort_order INTEGER NOT NULL DEFAULT 0,
-                        created_at DATETIME NOT NULL
-                    )
-                    """
-                )
-            )
-            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_dashboard_widgets_dashboard_id ON dashboard_widgets(dashboard_id)"))
-            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_dashboard_widgets_tenant_id ON dashboard_widgets(tenant_id)"))
-            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_dashboard_widgets_table_id ON dashboard_widgets(table_id)"))
-            table_names.add("dashboard_widgets")
-
         if "table_workflow_configs" not in table_names:
             conn.execute(
                 text(
