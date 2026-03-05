@@ -527,7 +527,7 @@ def _query_records(
             select(RecordModel)
             .where(*record_where)
             .options(joinedload(RecordModel.values))
-            .order_by(RecordModel.id.asc())
+            .order_by(RecordModel.created_at.desc(), RecordModel.id.desc())
             .offset(start)
             .limit(page_size)
         )
@@ -545,7 +545,7 @@ def _query_records(
         select(RecordModel)
         .where(*record_where)
         .options(joinedload(RecordModel.values))
-        .order_by(RecordModel.id.asc())
+        .order_by(RecordModel.created_at.desc(), RecordModel.id.desc())
     )
     records = db.scalars(stmt).unique().all()
 

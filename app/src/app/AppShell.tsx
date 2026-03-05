@@ -7,9 +7,12 @@ import {
   DownloadOutlined,
   FilterOutlined,
   LogoutOutlined,
+  PlusOutlined,
+  ProjectOutlined,
   RetweetOutlined,
   SettingOutlined,
   SortAscendingOutlined,
+  TableOutlined,
   TeamOutlined,
   UploadOutlined,
 } from '@ant-design/icons'
@@ -25,10 +28,13 @@ import { SortModal } from '../features/grid/components/modals/SortModal'
 import { CreateRecordModal } from '../features/grid/components/modals/CreateRecordModal'
 import { confirmAction } from '../utils/confirmAction'
 import { getApiErrorMessage } from '../utils/apiError'
+import { promptForText } from '../utils/promptForText'
 import { THEME_STORAGE_KEY, resolveInitialTheme, type ThemeMode } from '../utils/theme'
 import { AppShellHeader } from './components/AppShellHeader'
 import { AppShellSidebar, type SidebarConfigItem } from './components/AppShellSidebar'
 import { AppShellToolbar } from './components/AppShellToolbar'
+import { DropdownMenu } from '../features/grid/components/DropdownMenu'
+import { ViewTabsBar } from '../features/grid/viewTabs/ViewTabsBar'
 import { useAppShellViewCatalog } from './hooks/useAppShellViewCatalog'
 import { useAppShellRouteSync } from './hooks/useAppShellRouteSync'
 import { tableItems } from '../config/tables'
@@ -72,6 +78,7 @@ export function AppShell() {
     deleteSelectedRecords,
     clearSelectedRecords,
     selectAllRecords,
+    createView,
     updateViewConfig,
     importRecords,
     viewConfig,
@@ -90,6 +97,7 @@ export function AppShell() {
       deleteSelectedRecords: state.deleteSelectedRecords,
       clearSelectedRecords: state.clearSelectedRecords,
       selectAllRecords: state.selectAllRecords,
+      createView: state.createView,
       updateViewConfig: state.updateViewConfig,
       importRecords: state.importRecords,
       viewConfig: state.viewConfig,
@@ -170,6 +178,7 @@ export function AppShell() {
     isMembersRoute ||
     isAiModelsRoute ||
     isFormSetupRoute
+  const showViewTabs = !isConfigLikeRoute && !isFormRoute
   const showGridToolbar = !isConfigLikeRoute && !isFormRoute && !isKanbanRoute
   const canViewBusinessConfig = role === 'owner' || roleKey === 'admin'
   const { tableNameMap, visibleViews, sidebarVisibleViews } = useAppShellViewCatalog({
@@ -200,6 +209,7 @@ export function AppShell() {
   const [selectedPresetId, setSelectedPresetId] = useState('')
   const [isSortOpen, setIsSortOpen] = useState(false)
   const [isCreateRecordOpen, setIsCreateRecordOpen] = useState(false)
+  const [viewTabsReloadToken, setViewTabsReloadToken] = useState(0)
   const [isImporting, setIsImporting] = useState(false)
   const [isExporting, setIsExporting] = useState(false)
   const [fieldDisplayOpen, setFieldDisplayOpen] = useState(false)
@@ -245,6 +255,14 @@ export function AppShell() {
   )
   const toolbarCollapseToMore = viewportWidth < 1380
   const toolbarUltraCompact = viewportWidth < 1220
+  const currentTableViews = useMemo(
+    () => visibleViews.filter((view) => view.tableId === tableId),
+    [visibleViews, tableId],
+  )
+  const activeView = useMemo(
+    () => currentTableViews.find((view) => view.id === viewId) ?? currentTableViews[0] ?? null,
+    [currentTableViews, viewId],
+  )
   const configRouteAnchorView = useMemo(
     () =>
       sidebarVisibleViews.find((view) => view.id === viewId && view.tableId === tableId) ??
@@ -349,15 +367,15 @@ export function AppShell() {
   }
 
   const handleClearFilters = async () => {
-    if (viewConfig.filters.length === 0) return
+    if (viewConfig.filters.length === 0 && viewConfig.sorts.length === 0) return
     const confirmed = await confirmAction({
-      title: '确认清空当前筛选条件？',
-      content: '清空后将展示当前视图全部记录。',
+      title: '确认清空当前筛选/排序条件？',
+      content: '清空后将展示当前视图全部记录，并恢复默认排序。',
       okText: '确认清空',
       danger: true,
     })
     if (!confirmed) return
-    updateViewConfig({ filters: [], filterLogic: 'and' })
+    updateViewConfig({ filters: [], sorts: [], filterLogic: 'and' })
     setSelectedPresetId('')
   }
 
@@ -433,6 +451,66 @@ export function AppShell() {
     },
     [setToast],
   )
+  const createViewFromAddMenu = useCallback(
+    async (type: 'grid' | 'kanban' | 'form') => {
+      const labelMap = {
+        grid: '数据表视图',
+        kanban: '数据看板',
+        form: '表单视图',
+      } as const
+      const defaultNameMap = {
+        grid: '新建数据表',
+        kanban: '新建看板',
+        form: '新建表单',
+      } as const
+      const name = await promptForText(`新增${labelMap[type]}`, defaultNameMap[type], '请输入视图名称')
+      const nextName = name?.trim()
+      if (!nextName) return
+      const created = await createView(tableId, nextName, type)
+      if (!created) return
+      openSidebarView(created)
+    },
+    [createView, openSidebarView, tableId],
+  )
+  const addMenuItems = useMemo(
+    () => [
+      { key: 'add:view:grid', label: '新增数据表视图' },
+      { key: 'add:view:kanban', label: '新增数据看板' },
+      { key: 'add:view:gantt', label: '新增甘特图（即将上线）' },
+      { key: 'add:view:calendar', label: '新增日历视图（即将上线）' },
+      { key: 'add:view:form', label: '新增表单视图' },
+      { key: 'add:view:task', label: '新增任务视图（即将上线）' },
+    ],
+    [],
+  )
+  const handleAddMenuAction = useCallback(
+    async (key: string) => {
+      if (key === 'add:view:grid') {
+        await createViewFromAddMenu('grid')
+        return
+      }
+      if (key === 'add:view:kanban') {
+        await createViewFromAddMenu('kanban')
+        return
+      }
+      if (key === 'add:view:form') {
+        await createViewFromAddMenu('form')
+        return
+      }
+      if (key === 'add:view:gantt') {
+        openComingSoon('甘特图')
+        return
+      }
+      if (key === 'add:view:calendar') {
+        openComingSoon('日历视图')
+        return
+      }
+      if (key === 'add:view:task') {
+        openComingSoon('任务视图')
+      }
+    },
+    [createViewFromAddMenu, openComingSoon],
+  )
   // 暂停租户切换功能
   // const handleTenantSwitch = useCallback(
   //   async (nextTenantId: string) => {
@@ -494,8 +572,8 @@ export function AppShell() {
     ...(toolbarUltraCompact && canManageSorts
       ? [{ key: 'more:sort', label: withMenuIcon(<SortAscendingOutlined />, `排序${viewConfig.sorts.length > 0 ? `（${viewConfig.sorts.length}）` : ''}`) }]
       : []),
-    ...(toolbarCollapseToMore && canManageFilters && viewConfig.filters.length > 0
-      ? [{ key: 'more:clearFilters', label: withMenuIcon(<CloseCircleOutlined />, '清空筛选') }]
+    ...(toolbarCollapseToMore && (canManageFilters || canManageSorts) && (viewConfig.filters.length > 0 || viewConfig.sorts.length > 0)
+      ? [{ key: 'more:clearFilters', label: withMenuIcon(<CloseCircleOutlined />, '清空筛选/排序') }]
       : []),
     ...(toolbarCollapseToMore && canExportRecords ? [{ key: 'more:export', label: withMenuIcon(<DownloadOutlined />, '导出') }] : []),
     ...(toolbarCollapseToMore && canImportRecords ? [{ key: 'more:import', label: withMenuIcon(<UploadOutlined />, '导入') }] : []),
@@ -583,7 +661,7 @@ export function AppShell() {
           {/* Main content */}
           <main style={{ flex: 1, padding: 0, overflow: 'hidden', display: 'flex' }}>
             <div
-              className="main-panel"
+              className={`main-panel${!isConfigLikeRoute && !isFormRoute ? ' main-panel--grid' : ''}`}
               style={{
                 flex: 1,
                 minWidth: 0,
@@ -594,49 +672,140 @@ export function AppShell() {
                 overflowX: 'hidden',
               }}
             >
-              <AppShellToolbar
-                showGridToolbar={showGridToolbar}
-                canManageFilters={canManageFilters}
-                canManageSorts={canManageSorts}
-                canCreateRecord={canCreateRecord}
-                canDeleteSelectionNow={canDeleteSelectionNow}
-                canExportRecords={canExportRecords}
-                canImportRecords={canImportRecords}
-                viewConfig={viewConfig}
-                onOpenFilter={() => setIsFilterOpen(true)}
-                onOpenSort={() => setIsSortOpen(true)}
-                fieldDisplayRef={fieldDisplayRef}
-                fieldDisplayOpen={fieldDisplayOpen}
-                onToggleFieldDisplayOpen={() => setFieldDisplayOpen((v) => !v)}
-                visibleFieldCount={visibleFieldCount}
-                orderedFields={orderedFields}
-                hiddenFieldSet={hiddenFieldSet}
-                onToggleFieldVisibility={toggleFieldVisibility}
-                onShowAllFields={() => updateViewConfig({ hiddenFieldIds: [] })}
-                onOpenCreateRecord={() => setIsCreateRecordOpen(true)}
-                onDeleteSelection={handleDeleteSelection}
-                deleteButtonLabel={deleteButtonLabel}
-                toolbarCollapseToMore={toolbarCollapseToMore}
-                isImporting={isImporting}
-                isExporting={isExporting}
-                onExport={handleExport}
-                onImport={handleImportClick}
-                hasSelectedRecords={hasSelectedRecords}
-                isAllRecordsSelected={isAllRecordsSelected}
-                pageRecordCount={pageRecordCount}
-                selectedRecordIdsCount={selectedRecordIds.length}
-                onSelectAllRecords={selectAllRecords}
-                onClearSelectedRecords={clearSelectedRecords}
-                sortedPresets={sortedPresets}
-                selectedPresetId={selectedPresetId}
-                onApplyPreset={applyPreset}
-                hasFilterSummary={hasFilterSummary}
-                hasSortSummary={hasSortSummary}
-                onClearFilters={handleClearFilters}
-                toolbarOverflowMenuItems={toolbarOverflowMenuItems}
-                onToolbarOverflow={handleToolbarOverflow}
-              />
-              <Outlet />
+              {!isConfigLikeRoute && !isFormRoute ? (
+                <>
+                  {/* Page header — outside the card */}
+                  <div className="grid-page-header">
+                    <div className="grid-page-header-left">
+                      <h1 className="grid-page-title">{tableNameMap.get(tableId)?.name ?? '数据表'}</h1>
+                    </div>
+                    <div className="grid-page-header-right">
+                      {!toolbarCollapseToMore && canImportRecords ? (
+                        <button className="cm-btn" onClick={() => void handleImportClick()} disabled={isExporting || isImporting}>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                            <UploadOutlined />
+                            <span>{isImporting ? '导入中...' : '导入'}</span>
+                          </span>
+                        </button>
+                      ) : null}
+                      {!toolbarCollapseToMore && canExportRecords ? (
+                        <button className="cm-btn" onClick={() => void handleExport()} disabled={isImporting || isExporting}>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                            <DownloadOutlined />
+                            <span>{isExporting ? '导出中...' : '导出'}</span>
+                          </span>
+                        </button>
+                      ) : null}
+                      {canCreateRecord ? (
+                        <button className="cm-btn cm-btn--primary" onClick={() => setIsCreateRecordOpen(true)}>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                            <PlusOutlined />
+                            <span>新增记录</span>
+                          </span>
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  {/* View mode tabs — between header and card */}
+                  <div className="view-mode-tabs-row">
+                    {currentTableViews.map((view) => {
+                      const isActive = view.id === (activeView?.id ?? viewId)
+                      const icon = view.type === 'kanban' ? <ProjectOutlined /> : view.type === 'form' ? <AppstoreOutlined /> : <TableOutlined />
+                      const label = view.type === 'kanban' ? '数据看板' : view.type === 'form' ? '表单视图' : '表格数据'
+                      return (
+                        <button
+                          key={view.id}
+                          className={`view-mode-tab-item${isActive ? ' is-active' : ''}`}
+                          onClick={() => openSidebarView(view)}
+                        >
+                          <span className="view-mode-tab-icon">{icon}</span>
+                          <span>{view.name || label}</span>
+                        </button>
+                      )
+                    })}
+                    <DropdownMenu items={addMenuItems} onSelect={(key) => void handleAddMenuAction(key)}>
+                      <button className="view-mode-tab-add">
+                        <PlusOutlined />
+                        <span>新增视图</span>
+                      </button>
+                    </DropdownMenu>
+                  </div>
+
+                  {/* Main card — tabs + toolbar + table + pagination */}
+                  <div className="grid-page-card">
+                    {showViewTabs ? (
+                      <ViewTabsBar
+                        viewId={viewId}
+                        tableId={tableId}
+                        reloadToken={viewTabsReloadToken}
+                        current={{
+                          filterLogic: viewConfig.filterLogic ?? 'and',
+                          filters: viewConfig.filters,
+                          sorts: viewConfig.sorts,
+                        }}
+                        onApply={(payload) =>
+                          updateViewConfig({
+                            filterLogic: payload.filterLogic,
+                            filters: payload.filters,
+                            sorts: payload.sorts,
+                          })
+                        }
+                        onToast={setToast}
+                        toolbarSlot={
+                          showGridToolbar ? (
+                            <AppShellToolbar
+                              showGridToolbar={showGridToolbar}
+                              canManageFilters={canManageFilters}
+                              canManageSorts={canManageSorts}
+                              canCreateRecord={false}
+                              canDeleteSelectionNow={canDeleteSelectionNow}
+                              canExportRecords={false}
+                              canImportRecords={false}
+                              viewConfig={viewConfig}
+                              onOpenFilter={() => setIsFilterOpen(true)}
+                              onOpenSort={() => setIsSortOpen(true)}
+                              fieldDisplayRef={fieldDisplayRef}
+                              fieldDisplayOpen={fieldDisplayOpen}
+                              onToggleFieldDisplayOpen={() => setFieldDisplayOpen((v) => !v)}
+                              visibleFieldCount={visibleFieldCount}
+                              orderedFields={orderedFields}
+                              hiddenFieldSet={hiddenFieldSet}
+                              onToggleFieldVisibility={toggleFieldVisibility}
+                              onShowAllFields={() => updateViewConfig({ hiddenFieldIds: [] })}
+                              onOpenCreateRecord={() => setIsCreateRecordOpen(true)}
+                              onDeleteSelection={handleDeleteSelection}
+                              deleteButtonLabel={deleteButtonLabel}
+                              toolbarCollapseToMore={toolbarCollapseToMore}
+                              isImporting={isImporting}
+                              isExporting={isExporting}
+                              onExport={handleExport}
+                              onImport={handleImportClick}
+                              hasSelectedRecords={hasSelectedRecords}
+                              isAllRecordsSelected={isAllRecordsSelected}
+                              pageRecordCount={pageRecordCount}
+                              selectedRecordIdsCount={selectedRecordIds.length}
+                              onSelectAllRecords={selectAllRecords}
+                              onClearSelectedRecords={clearSelectedRecords}
+                              sortedPresets={sortedPresets}
+                              selectedPresetId={selectedPresetId}
+                              onApplyPreset={applyPreset}
+                              hasFilterSummary={hasFilterSummary}
+                              hasSortSummary={hasSortSummary}
+                              onClearFilters={handleClearFilters}
+                              toolbarOverflowMenuItems={toolbarOverflowMenuItems}
+                              onToolbarOverflow={handleToolbarOverflow}
+                            />
+                          ) : null
+                        }
+                      />
+                    ) : null}
+                    <Outlet />
+                  </div>
+                </>
+              ) : (
+                <Outlet />
+              )}
             </div>
           </main>
         </div>
@@ -645,9 +814,11 @@ export function AppShell() {
       <FilterModal
         open={isFilterOpen}
         onCancel={() => setIsFilterOpen(false)}
+        viewId={viewId}
         fields={fields}
         viewConfig={viewConfig}
         onUpdateViewConfig={updateViewConfig}
+        onPresetSavedAsTab={() => setViewTabsReloadToken((value) => value + 1)}
       />
 
       <SortModal

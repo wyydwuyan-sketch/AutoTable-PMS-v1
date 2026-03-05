@@ -475,7 +475,7 @@ export const useGridStore = create<GridState>((set, get) => {
     try {
       const created = await gridApiClient.createRecord(tableId, initialValues)
       set((state) => ({
-        records: [...state.records, created],
+        records: [created, ...state.records],
         totalRecords: state.totalRecords + 1,
         recordSnapshots: {
           ...state.recordSnapshots,
@@ -951,7 +951,7 @@ export const useGridStore = create<GridState>((set, get) => {
   },
   createView: async (tableId, name, type) => {
     try {
-      let created = await gridApiClient.createView(tableId, name, type)
+      const created = await gridApiClient.createView(tableId, name, type)
       set((state) => {
         // Initialize form view with all fields visible by default
         if (type === 'form') {
@@ -968,24 +968,6 @@ export const useGridStore = create<GridState>((set, get) => {
           toast: '已创建视图。',
         }
       })
-
-      // New grid views start as blank canvases by hiding existing fields.
-      // This matches "new view -> configure fields" workflow.
-      if (type === 'grid') {
-        const { fields } = get()
-        const hiddenFieldIds = fields.map((field) => field.id)
-        const updated = await gridApiClient.updateView(created.id, {
-          config: {
-              ...created.config,
-              hiddenFieldIds,
-              compactEmptyRows: true,
-            },
-          })
-        created = updated
-        set((state) => ({
-          views: state.views.map((view) => (view.id === updated.id ? updated : view)),
-        }))
-      }
 
       window.setTimeout(() => set({ toast: null }), 1500)
       return created

@@ -1,13 +1,10 @@
 import {
   CloseCircleOutlined,
   DeleteOutlined,
-  DownloadOutlined,
   EyeOutlined,
   FilterOutlined,
   MoreOutlined,
-  PlusOutlined,
   SortAscendingOutlined,
-  UploadOutlined,
 } from '@ant-design/icons'
 import type { ReactNode, RefObject } from 'react'
 import { DropdownMenu } from '../../features/grid/components/DropdownMenu'
@@ -72,10 +69,7 @@ export function AppShellToolbar({
   showGridToolbar,
   canManageFilters,
   canManageSorts,
-  canCreateRecord,
   canDeleteSelectionNow,
-  canExportRecords,
-  canImportRecords,
   viewConfig,
   onOpenFilter,
   onOpenSort,
@@ -87,14 +81,9 @@ export function AppShellToolbar({
   hiddenFieldSet,
   onToggleFieldVisibility,
   onShowAllFields,
-  onOpenCreateRecord,
   onDeleteSelection,
   deleteButtonLabel,
   toolbarCollapseToMore,
-  isImporting,
-  isExporting,
-  onExport,
-  onImport,
   hasSelectedRecords,
   isAllRecordsSelected,
   pageRecordCount,
@@ -116,159 +105,97 @@ export function AppShellToolbar({
 
   return (
     <>
-      <div className="view-toolbar">
-        <div className="toolbar-actions toolbar-actions-left">
-          <div className="toolbar-button-group">
-            {canManageFilters ? (
-              <div style={{ position: 'relative', display: 'inline-block' }}>
-                <button
-                  className={`cm-btn toolbar-state-btn ${viewConfig.filters.length > 0 ? 'is-active' : ''}`}
-                  onClick={onOpenFilter}
-                >
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                    <FilterOutlined />
-                    <span>筛选</span>
-                  </span>
-                </button>
-                {viewConfig.filters.length > 0 ? (
-                  <span className="toolbar-badge">{viewConfig.filters.length}</span>
-                ) : null}
-              </div>
-            ) : null}
-            {canManageSorts ? (
-              <div style={{ position: 'relative', display: 'inline-block' }}>
-                <button
-                  className={`cm-btn toolbar-state-btn ${viewConfig.sorts.length > 0 ? 'is-active' : ''}`}
-                  onClick={onOpenSort}
-                >
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                    <SortAscendingOutlined />
-                    <span>排序</span>
-                  </span>
-                </button>
-                {viewConfig.sorts.length > 0 ? (
-                  <span className="toolbar-badge">{viewConfig.sorts.length}</span>
-                ) : null}
-              </div>
-            ) : null}
-            <div ref={fieldDisplayRef} style={{ position: 'relative', display: 'inline-block' }}>
-              <button className="cm-btn" onClick={onToggleFieldDisplayOpen}>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                  <EyeOutlined />
-                  <span>字段显示</span>
-                </span>
-              </button>
-              {fieldDisplayOpen ? (
-                <div className="field-display-panel">
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <strong style={{ fontSize: 13 }}>字段显示</strong>
-                    <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                      {visibleFieldCount}/{orderedFields.length}
-                    </span>
-                  </div>
-                  <div style={{ maxHeight: 240, overflowY: 'auto', display: 'grid', gap: 6 }}>
-                    {orderedFields.map((field) => (
-                      <label key={field.id} className="cm-checkbox-label">
-                        <input
-                          type="checkbox"
-                          className="cm-checkbox"
-                          checked={!hiddenFieldSet.has(field.id)}
-                          onChange={(event) => onToggleFieldVisibility(field.id, event.target.checked)}
-                        />
-                        {field.name}
-                      </label>
-                    ))}
-                  </div>
-                  <button
-                    className="cm-btn cm-btn--sm"
-                    onClick={onShowAllFields}
-                    disabled={visibleFieldCount === orderedFields.length}
-                  >
-                    显示全部字段
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          </div>
-          <span className="toolbar-group-divider" aria-hidden="true" />
-          <div className="toolbar-button-group">
-            {canCreateRecord ? (
-              <button className="cm-btn cm-btn--primary" onClick={onOpenCreateRecord}>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                  <PlusOutlined />
-                  <span>新增记录</span>
-                </span>
-              </button>
-            ) : null}
-            {canDeleteSelectionNow ? (
-              <button className="cm-btn cm-btn--danger toolbar-delete-btn" onClick={() => void onDeleteSelection()}>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                  <DeleteOutlined />
-                  <span>{deleteButtonLabel}</span>
-                </span>
-              </button>
-            ) : null}
-            {!toolbarCollapseToMore && canExportRecords ? (
-              <button className="cm-btn" onClick={() => void onExport()} disabled={isImporting || isExporting}>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                  <DownloadOutlined />
-                  <span>{isExporting ? '导出中...' : '导出'}</span>
-                </span>
-              </button>
-            ) : null}
-            {!toolbarCollapseToMore && canImportRecords ? (
-              <button className="cm-btn" onClick={() => void onImport()} disabled={isExporting || isImporting}>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                  <UploadOutlined />
-                  <span>{isImporting ? '导入中...' : '导入'}</span>
-                </span>
-              </button>
+      {/* Inline toolbar buttons — rendered inside the tab bar row */}
+      <div className="toolbar-inline-buttons">
+        {canManageFilters ? (
+          <div style={{ position: 'relative', display: 'inline-block' }}>
+            <button
+              className={`toolbar-inline-btn ${viewConfig.filters.length > 0 ? 'is-active' : ''}`}
+              onClick={onOpenFilter}
+            >
+              <FilterOutlined />
+              <span>筛选</span>
+            </button>
+            {viewConfig.filters.length > 0 ? (
+              <span className="toolbar-badge">{viewConfig.filters.length}</span>
             ) : null}
           </div>
-          {hasSelectedRecords ? (
-            <div className="toolbar-selection-chip">
-              <span>
-                {isAllRecordsSelected
-                  ? `已选择本页全部 ${pageRecordCount}/${pageRecordCount}`
-                  : `已选择 ${selectedRecordIdsCount}/${pageRecordCount}`}
-              </span>
-              {!isAllRecordsSelected && selectedRecordIdsCount > 0 && selectedRecordIdsCount < pageRecordCount ? (
-                <button className="cm-btn cm-btn--sm" onClick={onSelectAllRecords} style={{ paddingInline: 6 }}>
-                  选择本页全部
-                </button>
-              ) : null}
-              <button className="cm-btn cm-btn--sm" onClick={onClearSelectedRecords}>取消</button>
+        ) : null}
+        {canManageSorts ? (
+          <div style={{ position: 'relative', display: 'inline-block' }}>
+            <button
+              className={`toolbar-inline-btn ${viewConfig.sorts.length > 0 ? 'is-active' : ''}`}
+              onClick={onOpenSort}
+            >
+              <SortAscendingOutlined />
+              <span>排序</span>
+            </button>
+            {viewConfig.sorts.length > 0 ? (
+              <span className="toolbar-badge">{viewConfig.sorts.length}</span>
+            ) : null}
+          </div>
+        ) : null}
+        <div ref={fieldDisplayRef} style={{ position: 'relative', display: 'inline-block' }}>
+          <button className="toolbar-inline-btn" onClick={onToggleFieldDisplayOpen}>
+            <EyeOutlined />
+            <span>字段显示</span>
+          </button>
+          {fieldDisplayOpen ? (
+            <div className="field-display-panel">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <strong style={{ fontSize: 13 }}>字段显示</strong>
+                <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                  {visibleFieldCount}/{orderedFields.length}
+                </span>
+              </div>
+              <div style={{ maxHeight: 240, overflowY: 'auto', display: 'grid', gap: 6 }}>
+                {orderedFields.map((field) => (
+                  <label key={field.id} className="cm-checkbox-label">
+                    <input
+                      type="checkbox"
+                      className="cm-checkbox"
+                      checked={!hiddenFieldSet.has(field.id)}
+                      onChange={(event) => onToggleFieldVisibility(field.id, event.target.checked)}
+                    />
+                    {field.name}
+                  </label>
+                ))}
+              </div>
+              <button
+                className="cm-btn cm-btn--sm"
+                onClick={onShowAllFields}
+                disabled={visibleFieldCount === orderedFields.length}
+              >
+                显示全部字段
+              </button>
             </div>
           ) : null}
         </div>
-        <div className="toolbar-actions toolbar-actions-end">
-          {!toolbarCollapseToMore && canManageFilters && sortedPresets.length > 0 ? (
+        {!toolbarCollapseToMore && canManageFilters && sortedPresets.length > 0 ? (
+          <>
+            <div className="toolbar-inline-divider" />
             <CustomSelect
               value={selectedPresetId || null}
               placeholder="选择筛选方案"
               onChange={(value) => onApplyPreset((value ?? '') as string)}
-              style={{ minWidth: 190 }}
+              style={{ minWidth: 160 }}
               options={sortedPresets.map((preset) => ({
                 label: `${preset.pinned ? '★ ' : ''}${preset.name}`,
                 value: preset.id,
               }))}
             />
-          ) : null}
-          {!toolbarCollapseToMore && canManageFilters && viewConfig.filters.length > 0 ? (
-            <button className="cm-btn" onClick={() => void onClearFilters()}>清空筛选</button>
-          ) : null}
-          {toolbarOverflowMenuItems.length > 0 ? (
-            <DropdownMenu items={toolbarOverflowMenuItems} onSelect={onToolbarOverflow}>
-              <button className="cm-btn">
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                  <MoreOutlined />
-                  <span>更多</span>
-                </span>
-              </button>
-            </DropdownMenu>
-          ) : null}
-        </div>
+          </>
+        ) : null}
+        {toolbarOverflowMenuItems.length > 0 ? (
+          <DropdownMenu items={toolbarOverflowMenuItems} onSelect={onToolbarOverflow}>
+            <button className="toolbar-inline-btn">
+              <MoreOutlined />
+            </button>
+          </DropdownMenu>
+        ) : null}
       </div>
+
+      {/* Filter/sort status bar — rendered below the tab bar */}
       {(hasFilterSummary || hasSortSummary) ? (
         <div className="toolbar-status-slot">
           <div className="filter-bar">
@@ -287,14 +214,41 @@ export function AppShellToolbar({
                   </>
                 ) : null}
               </span>
-              <button className="cm-btn cm-btn--sm" onClick={() => void onClearFilters()} disabled={!hasFilterSummary}>
+              <button
+                className="cm-btn cm-btn--sm"
+                onClick={() => void onClearFilters()}
+                disabled={!(hasFilterSummary || hasSortSummary)}
+              >
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                   <CloseCircleOutlined />
-                  <span>一键清除</span>
+                  <span>清空筛选/排序</span>
                 </span>
               </button>
             </div>
           </div>
+        </div>
+      ) : null}
+
+      {/* Floating bulk action bar */}
+      {hasSelectedRecords ? (
+        <div className="toolbar-floating-bulk">
+          <span className="toolbar-floating-bulk-count">
+            {isAllRecordsSelected
+              ? `已选择本页全部 ${pageRecordCount}/${pageRecordCount}`
+              : `已选择 ${selectedRecordIdsCount}/${pageRecordCount}`}
+          </span>
+          <div className="toolbar-floating-bulk-divider" />
+          {!isAllRecordsSelected && selectedRecordIdsCount > 0 && selectedRecordIdsCount < pageRecordCount ? (
+            <button className="toolbar-floating-bulk-btn" onClick={onSelectAllRecords}>
+              选择本页全部
+            </button>
+          ) : null}
+          {canDeleteSelectionNow ? (
+            <button className="toolbar-floating-bulk-btn toolbar-floating-bulk-btn--danger" onClick={() => void onDeleteSelection()}>
+              <DeleteOutlined /> {deleteButtonLabel}
+            </button>
+          ) : null}
+          <button className="toolbar-floating-bulk-btn" onClick={onClearSelectedRecords}>取消选择</button>
         </div>
       ) : null}
     </>

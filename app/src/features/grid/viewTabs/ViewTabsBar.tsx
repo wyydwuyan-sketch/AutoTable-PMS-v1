@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { gridApiClient } from '../api'
 import type { FilterCondition, FilterLogic, SortCondition, ViewTab } from '../types/grid'
 import { confirmAction } from '../../../utils/confirmAction'
-import { promptForText } from '../../../utils/promptForText'
 import { getApiErrorMessage } from '../../../utils/apiError'
 
 type CurrentPayload = {
@@ -11,32 +10,66 @@ type CurrentPayload = {
   sorts: SortCondition[]
 }
 
+type PayloadLike = Partial<CurrentPayload> | null | undefined
+const OPERATION_LOG_EVENT = 'grid_operation_logs_updated'
+const ALL_DATA_TAB_ID = '__all_data__'
+const ALL_DATA_TAB_NAME = '全部数据'
+
 interface ViewTabsBarProps {
   viewId: string
   tableId: string
+  reloadToken?: number
   current: CurrentPayload
   onApply: (payload: CurrentPayload) => void
   onToast?: (message: string, level?: 'success' | 'info' | 'warning' | 'error') => void
+  toolbarSlot?: ReactNode
 }
 
-const normalizePayload = (payload: CurrentPayload) => ({
-  filterLogic: payload.filterLogic ?? 'and',
-  filters: payload.filters ?? [],
-  sorts: payload.sorts ?? [],
+const normalizePayload = (payload: PayloadLike) => ({
+  filterLogic: payload?.filterLogic ?? 'and',
+  filters: Array.isArray(payload?.filters) ? payload.filters : [],
+  sorts: Array.isArray(payload?.sorts) ? payload.sorts : [],
 })
 
-const payloadKey = (payload: CurrentPayload) => JSON.stringify(normalizePayload(payload))
+const payloadKey = (payload: PayloadLike) => JSON.stringify(normalizePayload(payload))
+const isAllDataPayload = (payload: PayloadLike) => {
+  const normalized = normalizePayload(payload)
+  return normalized.filters.length === 0 && normalized.sorts.length === 0
+}
 
 export function ViewTabsBar({
   viewId,
   tableId,
+  reloadToken = 0,
   current,
   onApply,
   onToast,
+  toolbarSlot,
 }: ViewTabsBarProps) {
   const [tabs, setTabs] = useState<ViewTab[]>([])
+  const [tabCounts, setTabCounts] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(false)
-  const [activeTabId, setActiveTabId] = useState<string>('sys_all')
+  const [activeTabId, setActiveTabId] = useState<string>('')
+  const [countRefreshToken, setCountRefreshToken] = useState(0)
+  const allDataTab = useMemo<ViewTab>(
+    () => ({
+      id: ALL_DATA_TAB_ID,
+      viewId,
+      tableId,
+      name: ALL_DATA_TAB_NAME,
+      visibility: 'system',
+      ownerUserId: null,
+      isSystemPreset: true,
+      sortOrder: Number.MIN_SAFE_INTEGER,
+      payload: {
+        filterLogic: 'and',
+        filters: [],
+        sorts: [],
+      },
+    }),
+    [tableId, viewId],
+  )
+  const displayTabs = useMemo(() => [allDataTab, ...tabs], [allDataTab, tabs])
 
   const reloadTabs = async () => {
     setLoading(true)
@@ -52,37 +85,60 @@ export function ViewTabsBar({
 
   useEffect(() => {
     void reloadTabs()
-  }, [viewId])
+  }, [reloadToken, viewId])
 
   const currentKey = useMemo(() => payloadKey(current), [current])
   useEffect(() => {
+    if (isAllDataPayload(current)) {
+      setActiveTabId(ALL_DATA_TAB_ID)
+      return
+    }
     const matched = tabs.find((item) => payloadKey(item.payload) === currentKey)
     if (matched) {
       setActiveTabId(matched.id)
       return
     }
     setActiveTabId('')
-  }, [currentKey, tabs])
+  }, [current, currentKey, tabs])
 
-  const saveCurrentAsTab = async () => {
-    const name = await promptForText('保存当前筛选为标签', '', '例如：本周重点')
-    if (!name) return
-    try {
-      await gridApiClient.createViewTab(viewId, {
-        name,
-        visibility: 'personal',
-        payload: {
-          filterLogic: current.filterLogic,
-          filters: current.filters,
-          sorts: current.sorts,
-        },
-      })
-      await reloadTabs()
-      onToast?.('标签已保存。', 'success')
-    } catch (error) {
-      onToast?.(getApiErrorMessage(error, '保存标签失败。'), 'error')
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined
     }
-  }
+    const handler = () => {
+      setCountRefreshToken((value) => value + 1)
+    }
+    window.addEventListener(OPERATION_LOG_EVENT, handler)
+    return () => {
+      window.removeEventListener(OPERATION_LOG_EVENT, handler)
+    }
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    if (displayTabs.length === 0 || !tableId || !viewId) {
+      setTabCounts({})
+      return
+    }
+    void (async () => {
+      const entries: Array<readonly [string, number]> = []
+      for (const tab of displayTabs) {
+        const payload = normalizePayload(tab.payload)
+        try {
+          const page = await gridApiClient.getRecords(tableId, viewId, '0', 1, payload)
+          entries.push([tab.id, page.totalCount] as const)
+        } catch {
+          entries.push([tab.id, 0] as const)
+        }
+        if (!active) return
+      }
+      if (!active) return
+      setTabCounts(Object.fromEntries(entries))
+    })()
+    return () => {
+      active = false
+    }
+  }, [countRefreshToken, displayTabs, tableId, viewId])
 
   const deleteTab = async (tab: ViewTab) => {
     const confirmed = await confirmAction({
@@ -102,54 +158,47 @@ export function ViewTabsBar({
   }
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-      {(loading ? [] : tabs).map((tab) => {
-        const active = tab.id === activeTabId
-        return (
-          <div
-            key={tab.id}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              border: `1px solid ${active ? 'var(--primary)' : 'var(--border-color)'}`,
-              borderRadius: 999,
-              background: active ? 'color-mix(in srgb, var(--primary) 12%, transparent)' : 'var(--bg-panel)',
-              overflow: 'hidden',
-            }}
-          >
-            <button
-              type="button"
-              className="cm-btn cm-btn--sm"
-              style={{ border: 'none', background: 'transparent' }}
-              onClick={() => {
-                setActiveTabId(tab.id)
-                onApply({
-                  filterLogic: tab.payload.filterLogic,
-                  filters: tab.payload.filters,
-                  sorts: tab.payload.sorts,
-                })
-              }}
-            >
-              {tab.name}
-            </button>
-            {!tab.isSystemPreset ? (
+    <div className="view-filter-tabs-row">
+      {/* Left: tabs */}
+      <div className="view-filter-tabs">
+        {(loading ? [allDataTab] : displayTabs).map((tab) => {
+          const active = tab.id === activeTabId
+          const count = tabCounts[tab.id] ?? 0
+          return (
+            <div key={tab.id} className={`view-filter-tab${active ? ' is-active' : ''}`}>
               <button
                 type="button"
-                className="cm-btn cm-btn--sm"
-                style={{ border: 'none', borderLeft: '1px solid var(--border-color)', background: 'transparent' }}
-                onClick={() => void deleteTab(tab)}
-                title="删除标签"
+                className="view-filter-tab-main"
+                onClick={() => {
+                  setActiveTabId(tab.id)
+                  const payload = normalizePayload(tab.payload)
+                  onApply({
+                    filterLogic: payload.filterLogic,
+                    filters: payload.filters,
+                    sorts: payload.sorts,
+                  })
+                }}
               >
-                ×
+                <span className="view-filter-tab-label">{tab.name}</span>
+                <span className="view-filter-tab-count">{count.toLocaleString()}</span>
               </button>
-            ) : null}
-          </div>
-        )
-      })}
-      <button type="button" className="cm-btn cm-btn--sm" onClick={() => void saveCurrentAsTab()}>
-        + 保存标签
-      </button>
-      <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{tableId}</span>
+              {!tab.isSystemPreset ? (
+                <button
+                  type="button"
+                  className="view-filter-tab-remove"
+                  onClick={() => void deleteTab(tab)}
+                  title="删除标签"
+                >
+                  ×
+                </button>
+              ) : null}
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Right: toolbar buttons (injected from parent) */}
+      {toolbarSlot ? <div className="view-filter-toolbar-slot">{toolbarSlot}</div> : null}
     </div>
   )
 }

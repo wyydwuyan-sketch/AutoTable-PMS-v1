@@ -6,7 +6,6 @@ import { useGridStore } from '../store/gridStore'
 import type { KanbanColumns, RecordModel } from '../types/grid'
 import { createDefaultViewConfig } from '../utils/viewConfig'
 import { getApiErrorMessage } from '../../../utils/apiError'
-import { ViewTabsBar } from '../viewTabs/ViewTabsBar'
 import { RecordDrawer } from '../recordDrawer/RecordDrawer'
 
 export function KanbanView() {
@@ -24,7 +23,6 @@ export function KanbanView() {
     createRecord,
     tableButtonPermissions,
     openDrawer,
-    updateViewConfig,
   } = useGridStore(
     useShallow((state) => ({
       views: state.views,
@@ -38,7 +36,6 @@ export function KanbanView() {
       createRecord: state.createRecord,
       tableButtonPermissions: state.tableButtonPermissions,
       openDrawer: state.openDrawer,
-      updateViewConfig: state.updateViewConfig,
     })),
   )
   const [kanbanData, setKanbanData] = useState<KanbanColumns | null>(null)
@@ -169,24 +166,6 @@ export function KanbanView() {
 
   return (
     <div className="grid-root" style={{ padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <ViewTabsBar
-        viewId={viewId}
-        tableId={tableId}
-        current={{
-          filterLogic: viewConfig.filterLogic ?? 'and',
-          filters: viewConfig.filters,
-          sorts: viewConfig.sorts,
-        }}
-        onApply={(payload) =>
-          updateViewConfig({
-            filterLogic: payload.filterLogic,
-            filters: payload.filters,
-            sorts: payload.sorts,
-          })
-        }
-        onToast={setToast}
-      />
-
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
         <div style={{ fontWeight: 600 }}>{currentViewName}</div>
         <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>按状态分列，可拖拽更新状态</div>

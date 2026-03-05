@@ -350,7 +350,7 @@ export const mockGridApi = createApiClient({
       version: 0,
       values: initialValues,
     }
-    mockRecords.push(created)
+    mockRecords.unshift(created)
     recordsById.set(nextId, created)
     return delay(created)
   },
@@ -588,70 +588,7 @@ export const mockGridApi = createApiClient({
     return delay(mockStatusLogs.filter((item) => item.recordId === recordId))
   },
   async getViewTabs(viewId) {
-    const view = mockViews.find((item) => item.id === viewId)
-    const statusFieldId = mockWorkflowConfig.statusFieldId ?? 'fld_status'
-    const ownerFieldId = 'fld_owner'
-    const finalIds = mockWorkflowConfig.finalStatusOptionIds
-    const allTabs = [
-      {
-        id: 'sys_all',
-        viewId,
-        tableId: view?.tableId ?? 'tbl_1',
-        name: '全部',
-        visibility: 'system' as const,
-        ownerUserId: null,
-        isSystemPreset: true,
-        sortOrder: 0,
-        payload: { filterLogic: 'and' as const, filters: [], sorts: [] },
-      },
-      {
-        id: 'sys_my_tasks',
-        viewId,
-        tableId: view?.tableId ?? 'tbl_1',
-        name: '我的工单',
-        visibility: 'system' as const,
-        ownerUserId: 'usr_owner',
-        isSystemPreset: true,
-        sortOrder: 1,
-        payload: {
-          filterLogic: 'and' as const,
-          filters: [{ fieldId: ownerFieldId, op: 'contains', value: 'owner' }],
-          sorts: [],
-        },
-      },
-      {
-        id: 'sys_unfinished',
-        viewId,
-        tableId: view?.tableId ?? 'tbl_1',
-        name: '未完成',
-        visibility: 'system' as const,
-        ownerUserId: null,
-        isSystemPreset: true,
-        sortOrder: 2,
-        payload: {
-          filterLogic: 'and' as const,
-          filters: [{ fieldId: statusFieldId, op: 'nin', value: finalIds }],
-          sorts: [],
-        },
-      },
-      {
-        id: 'sys_done',
-        viewId,
-        tableId: view?.tableId ?? 'tbl_1',
-        name: '已完成',
-        visibility: 'system' as const,
-        ownerUserId: null,
-        isSystemPreset: true,
-        sortOrder: 3,
-        payload: {
-          filterLogic: 'and' as const,
-          filters: [{ fieldId: statusFieldId, op: 'in', value: finalIds }],
-          sorts: [],
-        },
-      },
-    ]
-    const custom = (mockViewTabs[viewId] ?? []).map((item) => ({ ...item }))
-    return delay([...allTabs, ...custom])
+    return delay((mockViewTabs[viewId] ?? []).map((item) => ({ ...item })))
   },
   async createViewTab(viewId, payload) {
     const view = mockViews.find((item) => item.id === viewId)

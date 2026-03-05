@@ -3,13 +3,16 @@ import { App as AntdApp, Button, Card, Input, Modal, Radio, Space, Tag, Typograp
 import type { Field, ViewConfig, FilterCondition, FilterLogic, FilterPreset, FilterDraft } from '../../types/grid'
 import { newRuleId, newPresetId, defaultOpByType, getFilterOpsByType, normalizeFilterValue } from '../../utils/filterUtils'
 import { confirmAction } from '../../../../utils/confirmAction'
+import { gridApiClient } from '../../api'
 
 interface FilterModalProps {
   open: boolean
   onCancel: () => void
+  viewId: string
   fields: Field[]
   viewConfig: ViewConfig
   onUpdateViewConfig: (config: Partial<ViewConfig>) => void
+  onPresetSavedAsTab?: () => void
 }
 
 type FilterRuleDraftTuple = Pick<FilterDraft, 'fieldId' | 'op' | 'value'>
@@ -56,7 +59,15 @@ function FlexFilterSummary({
   )
 }
 
-export function FilterModal({ open, onCancel, fields, viewConfig, onUpdateViewConfig }: FilterModalProps) {
+export function FilterModal({
+  open,
+  onCancel,
+  viewId,
+  fields,
+  viewConfig,
+  onUpdateViewConfig,
+  onPresetSavedAsTab,
+}: FilterModalProps) {
   const { message } = AntdApp.useApp()
   const [filterRules, setFilterRules] = useState<FilterDraft[]>([])
   const [filterLogicDraft, setFilterLogicDraft] = useState<FilterLogic>('and')
@@ -173,19 +184,48 @@ export function FilterModal({ open, onCancel, fields, viewConfig, onUpdateViewCo
     })
     if (!confirmed) return
 
+    const nextFilters = buildAppliedFilters()
+    const nextTabPayload = {
+      filterLogic: filterLogicDraft,
+      filters: nextFilters,
+      sorts: [...viewConfig.sorts],
+    }
     const existingByName = (viewConfig.filterPresets ?? []).find((item) => item.name === name)
     const preset: FilterPreset = {
       id: existingByName?.id ?? newPresetId(),
       name,
       pinned: existingByName?.pinned ?? false,
-      filters: buildAppliedFilters(),
-      sorts: viewConfig.sorts,
+      filters: nextFilters,
+      sorts: nextTabPayload.sorts,
       filterLogic: filterLogicDraft,
     }
     const existing = viewConfig.filterPresets ?? []
     const withoutSameName = existing.filter((item) => item.name !== name)
     onUpdateViewConfig({ filterPresets: [...withoutSameName, preset] })
     setPresetName('')
+
+    try {
+      if (!viewId) return
+      const existingTabs = await gridApiClient.getViewTabs(viewId)
+      const matchedTab = existingTabs.find(
+        (item) => !item.isSystemPreset && item.name.trim() === name,
+      )
+      if (matchedTab) {
+        await gridApiClient.updateViewTab(viewId, matchedTab.id, {
+          name,
+          payload: nextTabPayload,
+        })
+      } else {
+        await gridApiClient.createViewTab(viewId, {
+          name,
+          visibility: 'personal',
+          payload: nextTabPayload,
+        })
+      }
+      onPresetSavedAsTab?.()
+    } catch {
+      message.warning('筛选方案已保存，但同步标签失败。')
+    }
   }
 
   const applyPreset = (presetId: string) => {

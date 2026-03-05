@@ -100,6 +100,8 @@ function CellInner({ rowId, field, value, rowValues, width, stickyLeft }: CellPr
     }
     return formatCellValue(value, field.type)
   }, [componentType, field.type, memberNameMap, value])
+  const isEmptyDisplay = displayValue === ''
+  const shouldMonoText = /code|ip|port|端口|地址/i.test(field.name)
   const [draft, setDraft] = useState(displayValue)
   const [multiDraft, setMultiDraft] = useState<string[]>(Array.isArray(value) ? value.map(String) : [])
   const options = useMemo(() => {
@@ -375,34 +377,20 @@ function CellInner({ rowId, field, value, rowValues, width, stickyLeft }: CellPr
           }}
           aria-label={field.name}
         />
+      ) : isEmptyDisplay ? (
+        <span className="cell-empty">—</span>
       ) : colorOption?.color ? (
         <span
-          className="cell-text"
+          className="cell-badge"
           style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '2px 8px',
-            borderRadius: 999,
-            background: `${colorOption.color}22`,
-            color: colorOption.color,
-            border: `1px solid ${colorOption.color}55`,
-            maxWidth: '100%',
-          }}
+            '--badge-color': colorOption.color,
+          } as React.CSSProperties}
         >
-          <span
-            style={{
-              width: 7,
-              height: 7,
-              borderRadius: '50%',
-              background: colorOption.color,
-              flexShrink: 0,
-            }}
-          />
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayValue}</span>
+          <span className="cell-badge-dot" />
+          <span className="cell-badge-text">{displayValue}</span>
         </span>
       ) : (
-        <span className="cell-text">{displayValue}</span>
+        <span className={`cell-text${shouldMonoText ? ' cell-text-mono' : ''}`}>{displayValue}</span>
       )}
     </div>
   )

@@ -11,11 +11,11 @@ import { RecordDrawer } from '../recordDrawer/RecordDrawer'
 import { useShallow } from 'zustand/react/shallow'
 import { getApiErrorMessage } from '../../../utils/apiError'
 import { createDefaultViewConfig } from '../utils/viewConfig'
-import { ViewTabsBar } from '../viewTabs/ViewTabsBar'
 
 const ROW_HEIGHT = 40
 const ROW_NUM_WIDTH = 108
 const MAX_SERVER_PAGE_SIZE = 500
+const OPERATION_LOG_EVENT = 'grid_operation_logs_updated'
 type GridRowDataProps = {
   fields: Field[]
   records: RecordModel[]
@@ -74,6 +74,7 @@ export function GridView() {
   const [pageState, setPageState] = useState<{ scopeKey: string; page: number }>({ scopeKey: '', page: 1 })
   const [pageSize, setPageSize] = useState(25)
   const [metaReady, setMetaReady] = useState(false)
+  const [recordRefreshToken, setRecordRefreshToken] = useState(0)
 
   const queryKey = useMemo(
     () =>
@@ -184,6 +185,7 @@ export function GridView() {
     metaReady,
     pageSize,
     queryKey,
+    recordRefreshToken,
     setLoading,
     setRecordsPage,
     setToast,
@@ -193,6 +195,19 @@ export function GridView() {
     viewConfig.sorts,
     viewId,
   ])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined
+    }
+    const handler = () => {
+      setRecordRefreshToken((value) => value + 1)
+    }
+    window.addEventListener(OPERATION_LOG_EVENT, handler)
+    return () => {
+      window.removeEventListener(OPERATION_LOG_EVENT, handler)
+    }
+  }, [])
 
   const visibleFields = useMemo(() => {
     const fieldOrderIds = viewConfig.fieldOrderIds ?? fields.map((field) => field.id)
@@ -344,23 +359,6 @@ export function GridView() {
 
   return (
     <div className="grid-root">
-      <ViewTabsBar
-        viewId={viewId}
-        tableId={tableId}
-        current={{
-          filterLogic: viewConfig.filterLogic ?? 'and',
-          filters: viewConfig.filters,
-          sorts: viewConfig.sorts,
-        }}
-        onApply={(payload) =>
-          updateViewConfig({
-            filterLogic: payload.filterLogic,
-            filters: payload.filters,
-            sorts: payload.sorts,
-          })
-        }
-        onToast={setToast}
-      />
       <div className="grid-scroll-host" ref={scrollHostRef}>
         <div className="grid-scroll-inner" style={{ width: totalWidth }}>
           <GridHeader
@@ -411,6 +409,7 @@ export function GridView() {
           current={currentPage}
           total={totalRecords}
           pageSize={pageSize}
+          selectedCount={selectedCountOnPage}
           onChange={(nextPage) => setPage(nextPage)}
           onPageSizeChange={(size) => {
             setPageSize(size)

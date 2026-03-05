@@ -25,8 +25,8 @@ export function SortModal({ open, onCancel, fields, viewConfig, onUpdateViewConf
         direction: item.direction,
       }))
     }
-    return [{ fieldId: fields[0]?.id ?? '', direction: 'asc' }]
-  }, [fields, viewConfig.sorts])
+    return []
+  }, [viewConfig.sorts])
 
   const resetDrafts = useCallback(() => {
     setSortRules(baselineRules.map((item) => ({ ...item, id: newRuleId() })))
@@ -59,7 +59,7 @@ export function SortModal({ open, onCancel, fields, viewConfig, onUpdateViewConf
       return
     }
     const confirmed = await confirmAction({
-      title: '确认应用当前排序规则？',
+      title: sortRules.length === 0 ? '确认清空排序规则？' : '确认应用当前排序规则？',
       okText: '确认应用',
     })
     if (!confirmed) return
@@ -110,11 +110,25 @@ export function SortModal({ open, onCancel, fields, viewConfig, onUpdateViewConf
               <Typography.Text strong>排序草稿</Typography.Text>
               <Typography.Text type="secondary">共 {sortRules.length} 条规则</Typography.Text>
             </Space>
-            <Typography.Text type={hasDraftChanges ? 'warning' : 'secondary'} style={{ fontSize: 12 }}>
-              {hasDraftChanges ? '存在未应用更改' : '草稿与当前排序一致'}
-            </Typography.Text>
+            <Space size={8}>
+              <Button
+                size="small"
+                onClick={() => setSortRules([])}
+                disabled={sortRules.length === 0}
+              >
+                清空排序
+              </Button>
+              <Typography.Text type={hasDraftChanges ? 'warning' : 'secondary'} style={{ fontSize: 12 }}>
+                {hasDraftChanges ? '存在未应用更改' : '草稿与当前排序一致'}
+              </Typography.Text>
+            </Space>
           </div>
         </Card>
+        {sortRules.length === 0 ? (
+          <Card size="small" styles={{ body: { padding: 12 } }}>
+            <Typography.Text type="secondary">当前未设置排序规则。你可以点击下方“+ 添加规则”。</Typography.Text>
+          </Card>
+        ) : null}
         {sortRules.map((rule, index) => (
           <Card
             key={rule.id}
@@ -125,7 +139,6 @@ export function SortModal({ open, onCancel, fields, viewConfig, onUpdateViewConf
               <Button
                 size="small"
                 danger
-                disabled={sortRules.length <= 1}
                 onClick={() => setSortRules((prev) => prev.filter((item) => item.id !== rule.id))}
               >
                 删除

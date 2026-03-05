@@ -389,7 +389,7 @@ def get_view_tabs(
     tenant: TenantModel = Depends(get_current_tenant),
 ) -> list[ViewTabOut]:
     view = _ensure_view_access(db, view_id, tenant.id, user.id, request, access="read")
-    custom_tabs = db.scalars(
+    tabs = db.scalars(
         select(ViewTabModel)
         .where(
             ViewTabModel.tenant_id == tenant.id,
@@ -397,13 +397,13 @@ def get_view_tabs(
         )
         .order_by(ViewTabModel.sort_order.asc(), ViewTabModel.created_at.asc())
     ).all()
-    visible_custom_tabs = [
+    visible_tabs = [
         item
-        for item in custom_tabs
-        if item.visibility == "shared" or item.owner_user_id == user.id
+        for item in tabs
+        if item.visibility in {"personal", "shared"}
+        and (item.visibility == "shared" or item.owner_user_id == user.id)
     ]
-    system_tabs = _build_system_tabs(db, tenant.id, view.table_id, view.id, user)
-    custom_out = [
+    return [
         ViewTabOut(
             id=item.id,
             viewId=item.view_id,
@@ -415,9 +415,8 @@ def get_view_tabs(
             sortOrder=int(item.sort_order),
             payload=ViewTabPayload.model_validate(item.filter_payload_json or {}),
         )
-        for item in visible_custom_tabs
+        for item in visible_tabs
     ]
-    return [*system_tabs, *custom_out]
 
 
 @router.post("/views/{view_id}/tabs", response_model=ViewTabOut)
@@ -813,152 +812,6 @@ def _resolve_status_field_for_table(db: Session, tenant_id: str, table_id: str) 
         preferred_names=(),
         allowed_types={"singleSelect"},
     )
-
-
-def _build_system_tabs(
-    db: Session,
-    tenant_id: str,
-    table_id: str,
-    view_id: str,
-    user: UserModel,
-) -> list[ViewTabOut]:
-    fields = db.scalars(
-        select(FieldModel)
-        .where(
-            FieldModel.tenant_id == tenant_id,
-            FieldModel.table_id == table_id,
-        )
-        .order_by(FieldModel.sort_order.asc())
-    ).all()
-    status_field = _resolve_status_field_for_table(db, tenant_id, table_id)
-    config = _get_or_create_workflow_config(db, tenant_id, table_id)
-    final_status_ids = list(dict.fromkeys(config.final_status_option_ids_json or []))
-    owner_field = _find_first_field(
-        fields,
-        preferred_names=("负责人", "owner", "assignee", "指派"),
-        allowed_types={"member", "text", "singleSelect"},
-    )
-    due_field = _find_first_field(
-        fields,
-        preferred_names=("截止", "到期", "due", "计划完成", "结束日期"),
-        allowed_types={"date"},
-    )
-
-    user_markers = [item for item in [user.id, user.username, user.account] if item]
-    today = date.today()
-    week_start = today - timedelta(days=today.weekday())
-    week_end = week_start + timedelta(days=6)
-
-    tabs: list[ViewTabOut] = [
-        ViewTabOut(
-            id="sys_all",
-            viewId=view_id,
-            tableId=table_id,
-            name="全部",
-            visibility="system",
-            ownerUserId=None,
-            isSystemPreset=True,
-            sortOrder=0,
-            payload=ViewTabPayload(filters=[], sorts=[], filterLogic="and"),
-        )
-    ]
-    if owner_field and user_markers:
-        tabs.append(
-            ViewTabOut(
-                id="sys_my_tasks",
-                viewId=view_id,
-                tableId=table_id,
-                name="我的工单",
-                visibility="system",
-                ownerUserId=user.id,
-                isSystemPreset=True,
-                sortOrder=1,
-                payload=ViewTabPayload(
-                    filters=[{"fieldId": owner_field.id, "op": "in", "value": user_markers}],
-                    sorts=[],
-                    filterLogic="and",
-                ),
-            )
-        )
-    if status_field and final_status_ids:
-        tabs.append(
-            ViewTabOut(
-                id="sys_unfinished",
-                viewId=view_id,
-                tableId=table_id,
-                name="未完成",
-                visibility="system",
-                ownerUserId=None,
-                isSystemPreset=True,
-                sortOrder=2,
-                payload=ViewTabPayload(
-                    filters=[{"fieldId": status_field.id, "op": "nin", "value": final_status_ids}],
-                    sorts=[],
-                    filterLogic="and",
-                ),
-            )
-        )
-        tabs.append(
-            ViewTabOut(
-                id="sys_done",
-                viewId=view_id,
-                tableId=table_id,
-                name="已完成",
-                visibility="system",
-                ownerUserId=None,
-                isSystemPreset=True,
-                sortOrder=3,
-                payload=ViewTabPayload(
-                    filters=[{"fieldId": status_field.id, "op": "in", "value": final_status_ids}],
-                    sorts=[],
-                    filterLogic="and",
-                ),
-            )
-        )
-    if due_field:
-        tabs.append(
-            ViewTabOut(
-                id="sys_due_this_week",
-                viewId=view_id,
-                tableId=table_id,
-                name="本周到期",
-                visibility="system",
-                ownerUserId=None,
-                isSystemPreset=True,
-                sortOrder=4,
-                payload=ViewTabPayload(
-                    filters=[
-                        {"fieldId": due_field.id, "op": "gte", "value": week_start.isoformat()},
-                        {"fieldId": due_field.id, "op": "lte", "value": week_end.isoformat()},
-                    ],
-                    sorts=[],
-                    filterLogic="and",
-                ),
-            )
-        )
-        overdue_filters: list[dict[str, Any]] = [
-            {"fieldId": due_field.id, "op": "lt", "value": today.isoformat()},
-        ]
-        if status_field and final_status_ids:
-            overdue_filters.append({"fieldId": status_field.id, "op": "nin", "value": final_status_ids})
-        tabs.append(
-            ViewTabOut(
-                id="sys_overdue_unfinished",
-                viewId=view_id,
-                tableId=table_id,
-                name="逾期未完成",
-                visibility="system",
-                ownerUserId=None,
-                isSystemPreset=True,
-                sortOrder=5,
-                payload=ViewTabPayload(
-                    filters=overdue_filters,
-                    sorts=[],
-                    filterLogic="and",
-                ),
-            )
-        )
-    return tabs
 
 
 def _find_first_field(
