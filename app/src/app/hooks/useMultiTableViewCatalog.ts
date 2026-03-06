@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { gridApiClient } from '../../features/grid/api'
 import type { TableCatalogItem, View, ViewCatalog } from '../../features/grid/types/grid'
+import { invalidateViewCatalog, useViewCatalogVersion } from './catalogRefreshBus'
 
 interface UseMultiTableViewCatalogParams {
   tableItems: TableCatalogItem[]
@@ -30,10 +31,10 @@ export function useMultiTableViewCatalog({
 }: UseMultiTableViewCatalogParams): UseMultiTableViewCatalogResult {
   const [catalogsByTableId, setCatalogsByTableId] = useState<Record<string, ViewCatalog>>(() => buildEmptyCatalogMap(tableItems))
   const [isLoading, setIsLoading] = useState(false)
-  const [refreshTick, setRefreshTick] = useState(0)
+  const refreshVersion = useViewCatalogVersion()
 
   const refreshCatalogs = useCallback(() => {
-    setRefreshTick((current) => current + 1)
+    invalidateViewCatalog()
   }, [])
 
   const tableIdsKey = useMemo(() => tableItems.map((item) => item.id).join('|'), [tableItems])
@@ -80,7 +81,7 @@ export function useMultiTableViewCatalog({
     return () => {
       active = false
     }
-  }, [refreshTick, tableIdsKey, tableItems])
+  }, [refreshVersion, tableIdsKey, tableItems])
 
   const allViews = useMemo(
     () => tableItems.flatMap((item) => flattenViews(catalogsByTableId[item.id] ?? { tableId: item.id, folders: [] })),

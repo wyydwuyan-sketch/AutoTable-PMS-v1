@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { gridApiClient } from '../../features/grid/api'
 import type { View } from '../../features/grid/types/grid'
+import { invalidateViewCatalog, useViewCatalogVersion } from './catalogRefreshBus'
 
 type TableItemLike = {
   id: string
@@ -33,12 +34,12 @@ export function useMultiTableViews({
 }: UseMultiTableViewsParams): UseMultiTableViewsResult {
   const [snapshotViewsByTableId, setSnapshotViewsByTableId] = useState<Record<string, View[]>>(() => buildEmptyViewMap(tableItems))
   const [isLoading, setIsLoading] = useState(false)
-  const [refreshTick, setRefreshTick] = useState(0)
+  const refreshVersion = useViewCatalogVersion()
 
   const tableIdsKey = useMemo(() => tableItems.map((item) => item.id).join('|'), [tableItems])
 
   const refreshViews = useCallback(() => {
-    setRefreshTick((current) => current + 1)
+    invalidateViewCatalog()
   }, [])
 
   useEffect(() => {
@@ -77,7 +78,7 @@ export function useMultiTableViews({
     return () => {
       active = false
     }
-  }, [refreshTick, tableIdsKey, tableItems])
+  }, [refreshVersion, tableIdsKey, tableItems])
 
   const viewsByTableId = useMemo(() => {
     const nextMap = buildEmptyViewMap(tableItems)

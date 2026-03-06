@@ -52,6 +52,39 @@ const fieldTypeOptions: Array<{ value: FieldType; label: string }> = [
   { value: 'image', label: '图片' },
 ]
 
+const componentTypeLabelByValue = Object.fromEntries(
+  componentTypeOptions.map((item) => [item.value, item.label]),
+) as Record<FieldComponentType, string>
+
+const fieldTypeLabelByValue = Object.fromEntries(
+  fieldTypeOptions.map((item) => [item.value, item.label]),
+) as Record<FieldType, string>
+
+const getViewKindLabel = (view: View) => {
+  if ((view.viewRole ?? 'primary') === 'primary') return '主视图'
+  if (view.type === 'kanban') return '看板视图'
+  if (view.type === 'form') return '表单视图'
+  return '表格视图'
+}
+
+const matchesFieldKeyword = (
+  field: Field,
+  binding: FieldComponentConfig | undefined,
+  keyword: string,
+) => {
+  if (!keyword) return true
+  const componentType = binding?.componentType ?? 'default'
+  const haystacks = [
+    field.name,
+    field.id,
+    field.type,
+    fieldTypeLabelByValue[field.type] ?? field.type,
+    componentType,
+    componentTypeLabelByValue[componentType] ?? componentType,
+  ]
+  return haystacks.some((item) => item.toLowerCase().includes(keyword))
+}
+
 const colorPresets: Array<{ label: string; value: string }> = [
   { label: '红色', value: '#ef4444' },
   { label: '橙色', value: '#f97316' },
@@ -150,8 +183,6 @@ const toOrderedFields = (fields: Field[], fieldOrderIds?: string[]): Field[] => 
   return mergedIds.map((id) => fieldMap.get(id)).filter((field): field is Field => !!field)
 }
 
-type FieldListFilter = 'all' | 'configured' | 'removed' | 'visible'
-
 export function TableComponents() {
   const { baseId = 'base_1', tableId = '', viewId = '' } = useParams()
   const { tables: tableItems, isLoading: tableCatalogLoading } = useTableCatalog(baseId)
@@ -170,7 +201,6 @@ export function TableComponents() {
   const hasSetupWizardQuery = searchParams.get('setup') === '1'
   const {
     fieldsByTableId,
-    allFields: multiTableAllFields,
     isLoading: multiTableFieldsLoading,
     refreshFields,
   } = useMultiTableFields({
@@ -182,7 +212,6 @@ export function TableComponents() {
     activeTableId: tableId,
   })
   const [localViewOverrides, setLocalViewOverrides] = useState<Record<string, View>>({})
-  const [listFilterByTableId, setListFilterByTableId] = useState<Record<string, FieldListFilter>>({})
   const [searchKeywordByTableId, setSearchKeywordByTableId] = useState<Record<string, string>>({})
   const [selectedTargetViewIdByTableId, setSelectedTargetViewIdByTableId] = useState<Record<string, string>>({})
   const [editingTableId, setEditingTableId] = useState(tableId)
@@ -332,16 +361,12 @@ export function TableComponents() {
         const tableBindings = targetViewConfig.components ?? {}
         const tableHiddenFieldSet = new Set(targetViewConfig.hiddenFieldIds ?? [])
         const tableOrderedFields = toOrderedFields(tableFields, targetViewConfig.fieldOrderIds)
-        const currentListFilter = listFilterByTableId[item.id] ?? 'all'
         const currentSearchKeyword = searchKeywordByTableId[item.id] ?? ''
         const normalizedKeyword = currentSearchKeyword.trim().toLowerCase()
         const configuredCount = tableOrderedFields.filter((field) => !!tableBindings[field.id]).length
         const removedCount = tableOrderedFields.filter((field) => tableHiddenFieldSet.has(field.id)).length
         const visibleCount = tableOrderedFields.filter((field) => !tableHiddenFieldSet.has(field.id)).length
         const filteredFields = tableOrderedFields.filter((field) => {
-          if (currentListFilter === 'configured' && !tableBindings[field.id]) return false
-          if (currentListFilter === 'removed' && !tableHiddenFieldSet.has(field.id)) return false
-          if (currentListFilter === 'visible' && tableHiddenFieldSet.has(field.id)) return false
           if (!normalizedKeyword) return true
           const binding = tableBindings[field.id]
           return (
@@ -366,9 +391,9 @@ export function TableComponents() {
           configuredCount,
           removedCount,
           visibleCount,
-          listFilter: currentListFilter,
+          listFilter: 'all' as const,
           searchKeyword: currentSearchKeyword,
-          canDragSort: currentListFilter === 'all' && normalizedKeyword.length === 0,
+          canDragSort: normalizedKeyword.length === 0,
           filterItems: [
             { key: 'all' as const, label: '全部', count: tableOrderedFields.length },
             { key: 'configured' as const, label: '已配置', count: configuredCount },
@@ -381,11 +406,36 @@ export function TableComponents() {
       defaultViewConfig,
       effectiveViewsByTableId,
       fieldsByTableId,
-      listFilterByTableId,
       searchKeywordByTableId,
       selectedTargetViewIdByTableId,
     ],
   )
+  const currentGroup = useMemo(
+    () => groupModels.find((group) => group.tableId === tableId) ?? groupModels[0] ?? null,
+    [groupModels, tableId],
+  )
+  const currentSearchKeyword = currentGroup ? searchKeywordByTableId[currentGroup.tableId] ?? '' : ''
+  const normalizedCurrentSearchKeyword = currentSearchKeyword.trim().toLowerCase()
+  const currentVisibleFields = useMemo(() => {
+    if (!currentGroup) return []
+    return currentGroup.orderedFields.filter(
+      (field) =>
+        !currentGroup.hiddenFieldSet.has(field.id) &&
+        matchesFieldKeyword(field, currentGroup.bindings[field.id], normalizedCurrentSearchKeyword),
+    )
+  }, [currentGroup, normalizedCurrentSearchKeyword])
+  const currentPendingFields = useMemo(() => {
+    if (!currentGroup) return []
+    return currentGroup.orderedFields.filter(
+      (field) =>
+        currentGroup.hiddenFieldSet.has(field.id) &&
+        matchesFieldKeyword(field, currentGroup.bindings[field.id], normalizedCurrentSearchKeyword),
+    )
+  }, [currentGroup, normalizedCurrentSearchKeyword])
+  const currentConfigurableViewLabel = currentGroup?.targetView
+    ? `${currentGroup.targetView.name} · ${getViewKindLabel(currentGroup.targetView)}`
+    : '未选择视图'
+  const canSortCurrentVisibleFields = normalizedCurrentSearchKeyword.length === 0
   const createFieldTargetViews = useMemo(
     () =>
       [...(effectiveViewsByTableId[newFieldTargetTableId] ?? [])].sort(
@@ -629,6 +679,24 @@ export function TableComponents() {
     setIsSetupWizardOpen(false)
     clearSetupQueryParam()
     setToast('视图初始化已完成。')
+  }
+
+  const handleShowAllFieldsInTargetView = async (targetTableId: string, targetViewId: string) => {
+    const group = findGroupModel(targetTableId)
+    if (!group || !targetViewId) return
+    const confirmed = await confirmAction({
+      title: '确认将全部字段加入当前视图？',
+      content: '该操作只会影响当前视图展示，不会修改字段本身。',
+      okText: '确认加入',
+    })
+    if (!confirmed) return
+    const updated = await patchTargetViewConfig(targetTableId, targetViewId, {
+      hiddenFieldIds: [],
+      fieldOrderIds: group.orderedFields.map((field) => field.id),
+    })
+    if (updated) {
+      setToast('全部字段已加入当前视图。')
+    }
   }
 
   const openEditor = (targetTableId: string, fieldId: string) => {
@@ -952,217 +1020,345 @@ export function TableComponents() {
   return (
     <div className="grid-root tc-page">
       <div className="tc-header">
-        <h3 className="tc-title">业务配置 / 表格组件</h3>
+        <h3 className="tc-title">业务配置 / 视图组件配置</h3>
         <p className="tc-subtitle">
-          {tableCatalogLoading
-            ? '正在加载数据表目录...'
-            : `当前视图: ${currentViewId ?? '-'}。已加载 ${tableItems.length} 个数据表、${multiTableAllFields.length} 个字段，可按表分组统一配置。`}
+          {tableCatalogLoading || multiTableViewsLoading
+            ? '正在加载当前数据表与视图配置...'
+            : '当前页面仅配置当前数据表下的目标视图。字段不会自动继承，需要先加入视图，再配置组件。'}
         </p>
       </div>
 
-      <div className="tc-table-sections">
-        {groupModels.map((group) => (
-          <section key={group.tableId} className="tc-table-section">
-            <div className="tc-table-section-header">
-              <div className="tc-table-section-title">
-                <span className="tc-table-section-icon"><AppstoreOutlined /></span>
-                <div className="tc-table-section-texts">
-                  <strong>{group.tableName}</strong>
-                  <span>
-                    {group.tableViews.length} 个视图 · 当前配置视图：
-                    {group.targetView ? `${group.targetView.name} (${group.targetView.type === 'form' ? '表单' : '表格'})` : '未选择'}
-                  </span>
+      {!currentGroup ? (
+        <div className="tc-empty-shell">
+          {tableCatalogLoading ? '正在加载数据表...' : '当前没有可配置的数据表。'}
+        </div>
+      ) : (
+        <div className="tc-workspace">
+          <section className="tc-overview-card">
+            <div className="tc-overview-head">
+              <div className="tc-overview-copy">
+                <div className="tc-table-section-title">
+                  <span className="tc-table-section-icon"><AppstoreOutlined /></span>
+                  <div className="tc-table-section-texts">
+                    <strong>{currentGroup.tableName}</strong>
+                    <span>
+                      当前目标视图：{currentConfigurableViewLabel}
+                    </span>
+                  </div>
+                </div>
+                <div className="tc-overview-note">
+                  新建主视图默认为空。请从“未加入视图”中手动添加字段，再配置组件与顺序。
                 </div>
               </div>
-              <div className="tc-table-section-actions">
+
+              <div className="tc-overview-controls">
                 <div className="tc-table-view-select">
                   <span className="tc-table-view-select-label">目标视图</span>
                   <CustomSelect
-                    value={group.targetViewId || undefined}
+                    value={currentGroup.targetViewId || undefined}
                     placeholder={multiTableViewsLoading ? '加载视图中...' : '请选择视图'}
                     onChange={(value) =>
                       setSelectedTargetViewIdByTableId((prev) => ({
                         ...prev,
-                        [group.tableId]: (value as string) ?? '',
+                        [currentGroup.tableId]: (value as string) ?? '',
                       }))
                     }
-                    options={group.tableViews.map((view) => ({
+                    options={currentGroup.tableViews.map((view) => ({
                       value: view.id,
-                      label: `${view.name} · ${view.type === 'form' ? '表单视图' : '表格视图'}`,
+                      label: `${view.name} · ${getViewKindLabel(view)}`,
                     }))}
                   />
                 </div>
+                <input
+                  className="cm-input tc-search-input"
+                  value={currentSearchKeyword}
+                  placeholder="搜索字段名 / 类型 / 组件"
+                  onChange={(event) =>
+                    setSearchKeywordByTableId((prev) => ({
+                      ...prev,
+                      [currentGroup.tableId]: event.target.value,
+                    }))
+                  }
+                />
                 <button
-                  className="cm-btn cm-btn--sm cm-btn--primary"
-                  onClick={() => openCreateFieldModal(group.tableId)}
-                  disabled={!group.targetViewId || isCreatingField}
+                  className="cm-btn"
+                  onClick={() => setIsSetupWizardOpen(true)}
+                  disabled={!currentGroup.targetViewId}
+                >
+                  初始化向导
+                </button>
+                <button
+                  className="cm-btn cm-btn--primary"
+                  onClick={() => openCreateFieldModal(currentGroup.tableId)}
+                  disabled={!currentGroup.targetViewId || isCreatingField}
                 >
                   <PlusOutlined /> 新增字段
                 </button>
               </div>
             </div>
 
-            <div className="tc-stats-bar tc-stats-bar--group">
-              <span className="tc-stat-item">
-                <span className="tc-stat-dot tc-stat-dot--total" />
-                全部 {group.orderedFields.length}
-              </span>
-              <span className="tc-stat-item">
-                <span className="tc-stat-dot tc-stat-dot--configured" />
-                已配置 {group.configuredCount}
-              </span>
-              <span className="tc-stat-item">
-                <span className="tc-stat-dot tc-stat-dot--visible" />
-                可见 {group.visibleCount}
-              </span>
-              <span className="tc-stat-item">
-                <span className="tc-stat-dot tc-stat-dot--removed" />
-                已移除 {group.removedCount}
-              </span>
-              <span className="tc-stat-item tc-stat-item--tableid">{group.tableId}</span>
+            <div className="tc-summary-grid">
+              <article className="tc-summary-card">
+                <span className="tc-summary-label">全部字段</span>
+                <strong className="tc-summary-value">{currentGroup.orderedFields.length}</strong>
+                <span className="tc-summary-meta">{currentGroup.tableId}</span>
+              </article>
+              <article className="tc-summary-card">
+                <span className="tc-summary-label">已加入视图</span>
+                <strong className="tc-summary-value">{currentGroup.visibleCount}</strong>
+                <span className="tc-summary-meta">当前视图可见字段</span>
+              </article>
+              <article className="tc-summary-card">
+                <span className="tc-summary-label">未加入视图</span>
+                <strong className="tc-summary-value">{currentGroup.removedCount}</strong>
+                <span className="tc-summary-meta">仅隐藏于当前视图</span>
+              </article>
+              <article className="tc-summary-card">
+                <span className="tc-summary-label">已自定义组件</span>
+                <strong className="tc-summary-value">{currentGroup.configuredCount}</strong>
+                <span className="tc-summary-meta">已脱离默认组件</span>
+              </article>
             </div>
-
-            {!group.targetViewId ? (
-              <div className="tc-group-empty">
-                {multiTableViewsLoading ? '正在加载该表视图...' : '该数据表暂无可用视图，请先在“视图管理”中创建视图。'}
-              </div>
-            ) : (
-              <section className="tc-field-table">
-                <div className="tc-toolbar">
-                  <div className="tc-toolbar-left">
-                    {group.filterItems.map((item) => (
-                      <button
-                        key={`${group.tableId}_${item.key}`}
-                        className={`cm-btn cm-btn--sm${group.listFilter === item.key ? ' cm-btn--primary' : ''}`}
-                        onClick={() =>
-                          setListFilterByTableId((prev) => ({
-                            ...prev,
-                            [group.tableId]: item.key,
-                          }))
-                        }
-                      >
-                        {item.label} {item.count}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="tc-toolbar-right">
-                    <input
-                      className="cm-input"
-                      value={group.searchKeyword}
-                      placeholder="搜索字段名 / 类型 / 组件"
-                      onChange={(event) =>
-                        setSearchKeywordByTableId((prev) => ({
-                          ...prev,
-                          [group.tableId]: event.target.value,
-                        }))
-                      }
-                      style={{ width: 240, maxWidth: '100%' }}
-                    />
-                  </div>
-                </div>
-
-                {!group.canDragSort ? (
-                  <div className="tc-drag-hint">
-                    当前为筛选/搜索结果，已禁用拖拽排序。
-                  </div>
-                ) : null}
-
-                <div className="tc-field-table-head">
-                  <span />
-                  <span>字段</span>
-                  <span>类型 / 组件 / 状态</span>
-                  <span style={{ textAlign: 'right' }}>操作</span>
-                </div>
-                {group.filteredFields.map((field) => {
-                  const binding = group.bindings[field.id]
-                  const isDragging = draggingFieldId === field.id
-                  const isRemoved = group.hiddenFieldSet.has(field.id)
-                  return (
-                    <div
-                      key={`${group.tableId}_${field.id}`}
-                      className={`tc-field-row ${isDragging ? 'tc-field-row--dragging' : ''}`}
-                      draggable={group.canDragSort}
-                      onDoubleClick={() => openEditor(group.tableId, field.id)}
-                      onDragStart={() => {
-                        if (!group.canDragSort) return
-                        setDraggingFieldId(field.id)
-                      }}
-                      onDragEnter={() => {
-                        if (!group.canDragSort || !group.targetViewId) return
-                        handleDragEnterField(group.tableId, group.targetViewId, field.id)
-                      }}
-                      onDragOver={(event) => {
-                        if (!group.canDragSort) return
-                        event.preventDefault()
-                      }}
-                      onDrop={() => {
-                        if (!group.canDragSort) return
-                        setDraggingFieldId(null)
-                      }}
-                      onDragEnd={() => setDraggingFieldId(null)}
-                      style={{ cursor: group.canDragSort ? 'grab' : 'default' }}
-                    >
-                      <span
-                        className={`tc-drag-handle ${!group.canDragSort ? 'tc-drag-handle--disabled' : ''}`}
-                        title={group.canDragSort ? '拖拽排序' : '筛选时不可拖拽'}
-                      >
-                        ⠿
-                      </span>
-                      <div className="tc-field-info">
-                        <div className="tc-field-name">{field.name}</div>
-                        <div className="tc-field-id">{field.id}</div>
-                      </div>
-                      <div className="tc-field-tags">
-                        <span className="tc-tag">{field.type}</span>
-                        <span className={`tc-tag ${binding ? 'tc-tag--processing' : ''}`}>
-                          {binding?.componentType ?? '默认'}
-                        </span>
-                        {isRemoved ? (
-                          <span className="tc-tag tc-tag--gold">已移除</span>
-                        ) : (
-                          <span className="tc-tag tc-tag--green">可见</span>
-                        )}
-                      </div>
-                      <div className="tc-field-actions">
-                        <button
-                          className="cm-btn cm-btn--sm"
-                          title="编辑组件"
-                          onClick={() => openEditor(group.tableId, field.id)}
-                        >
-                          ✏
-                        </button>
-                        <DropdownMenu
-                          items={[
-                            { key: 'toggleVisible', label: isRemoved ? '加入当前视图' : '从当前视图移除' },
-                            { key: 'clearConfig', label: '🗑 删除配置', danger: true, disabled: !binding },
-                          ]}
-                          onClick={({ key }) => {
-                            if (!group.targetViewId) return
-                            if (key === 'toggleVisible') {
-                              void toggleFieldVisibilityInTargetView(group.tableId, group.targetViewId, field)
-                              return
-                            }
-                            if (key === 'clearConfig') {
-                              void handleClearFieldBinding(field, group.tableId, group.targetViewId)
-                            }
-                          }}
-                        >
-                          <button className="cm-btn cm-btn--sm" title="更多操作">⋮</button>
-                        </DropdownMenu>
-                      </div>
-                    </div>
-                  )
-                })}
-                {group.filteredFields.length === 0 ? (
-                  <div className="tc-field-empty">
-                    {multiTableFieldsLoading ? '正在加载字段...' : '没有匹配的字段，请调整筛选条件或搜索关键词。'}
-                  </div>
-                ) : null}
-              </section>
-            )}
           </section>
-        ))}
-      </div>
+
+          {!currentGroup.targetViewId ? (
+            <div className="tc-empty-shell">
+              {multiTableViewsLoading ? '正在加载当前表视图...' : '当前数据表暂无可配置视图，请先在“视图管理”中创建视图。'}
+            </div>
+          ) : (
+            <>
+              {currentGroup.visibleCount === 0 ? (
+                <section className="tc-empty-state">
+                  <div className="tc-empty-state-copy">
+                    <strong>当前视图还没有字段</strong>
+                    <p>
+                      这是正常的初始化状态。新建主视图不会继承原视图字段，请从下方“未加入视图”中手动添加，
+                      或通过初始化向导批量选择字段。
+                    </p>
+                  </div>
+                  <div className="tc-empty-actions">
+                    <button className="cm-btn cm-btn--primary" onClick={() => setIsSetupWizardOpen(true)}>
+                      打开字段配置向导
+                    </button>
+                    <button
+                      className="cm-btn"
+                      onClick={() => void handleShowAllFieldsInTargetView(currentGroup.tableId, currentGroup.targetViewId)}
+                      disabled={currentGroup.removedCount === 0}
+                    >
+                      全部加入当前视图
+                    </button>
+                    <button className="cm-btn" onClick={() => openCreateFieldModal(currentGroup.tableId)}>
+                      <PlusOutlined /> 新增字段
+                    </button>
+                  </div>
+                </section>
+              ) : null}
+
+              <div className="tc-section-grid">
+                <section className="tc-field-panel">
+                  <div className="tc-panel-header">
+                    <div className="tc-panel-copy">
+                      <strong>已加入当前视图</strong>
+                      <span>这些字段会出现在当前视图中，可直接配置组件并拖拽排序。</span>
+                    </div>
+                    <span className="tc-panel-count">{currentGroup.visibleCount} 个字段</span>
+                  </div>
+
+                  {!canSortCurrentVisibleFields ? (
+                    <div className="tc-drag-hint">
+                      搜索结果中已禁用拖拽排序，清空搜索后可按展示顺序调整字段。
+                    </div>
+                  ) : null}
+
+                  <div className="tc-field-table">
+                    <div className="tc-field-table-head">
+                      <span />
+                      <span>字段</span>
+                      <span>类型 / 组件 / 状态</span>
+                      <span style={{ textAlign: 'right' }}>操作</span>
+                    </div>
+                    {currentVisibleFields.map((field) => {
+                      const binding = currentGroup.bindings[field.id]
+                      const isDragging = draggingFieldId === field.id
+                      return (
+                        <div
+                          key={`${currentGroup.tableId}_${field.id}`}
+                          className={`tc-field-row ${isDragging ? 'tc-field-row--dragging' : ''}`}
+                          draggable={canSortCurrentVisibleFields}
+                          onDoubleClick={() => openEditor(currentGroup.tableId, field.id)}
+                          onDragStart={() => {
+                            if (!canSortCurrentVisibleFields) return
+                            setDraggingFieldId(field.id)
+                          }}
+                          onDragEnter={() => {
+                            if (!canSortCurrentVisibleFields || !currentGroup.targetViewId) return
+                            handleDragEnterField(currentGroup.tableId, currentGroup.targetViewId, field.id)
+                          }}
+                          onDragOver={(event) => {
+                            if (!canSortCurrentVisibleFields) return
+                            event.preventDefault()
+                          }}
+                          onDrop={() => {
+                            if (!canSortCurrentVisibleFields) return
+                            setDraggingFieldId(null)
+                          }}
+                          onDragEnd={() => setDraggingFieldId(null)}
+                          style={{ cursor: canSortCurrentVisibleFields ? 'grab' : 'default' }}
+                        >
+                          <span
+                            className={`tc-drag-handle ${!canSortCurrentVisibleFields ? 'tc-drag-handle--disabled' : ''}`}
+                            title={canSortCurrentVisibleFields ? '拖拽排序' : '搜索时不可拖拽'}
+                          >
+                            ⠿
+                          </span>
+                          <div className="tc-field-info">
+                            <div className="tc-field-name">{field.name}</div>
+                            <div className="tc-field-id">{field.id}</div>
+                          </div>
+                          <div className="tc-field-tags">
+                            <span className="tc-tag">{fieldTypeLabelByValue[field.type] ?? field.type}</span>
+                            <span className={`tc-tag ${binding ? 'tc-tag--processing' : ''}`}>
+                              {componentTypeLabelByValue[binding?.componentType ?? 'default'] ?? '默认'}
+                            </span>
+                            <span className="tc-tag tc-tag--green">已加入视图</span>
+                          </div>
+                          <div className="tc-field-actions">
+                            <button
+                              className="cm-btn cm-btn--sm"
+                              title="配置组件"
+                              onClick={() => openEditor(currentGroup.tableId, field.id)}
+                            >
+                              配置
+                            </button>
+                            <button
+                              className="cm-btn cm-btn--sm"
+                              title="移出视图"
+                              onClick={() => void toggleFieldVisibilityInTargetView(currentGroup.tableId, currentGroup.targetViewId, field)}
+                            >
+                              移出
+                            </button>
+                            <DropdownMenu
+                              items={[
+                                { key: 'clearConfig', label: '删除组件配置', danger: true, disabled: !binding },
+                              ]}
+                              onClick={({ key }) => {
+                                if (key === 'clearConfig') {
+                                  void handleClearFieldBinding(field, currentGroup.tableId, currentGroup.targetViewId)
+                                }
+                              }}
+                            >
+                              <button className="cm-btn cm-btn--sm" title="更多操作">⋮</button>
+                            </DropdownMenu>
+                          </div>
+                        </div>
+                      )
+                    })}
+                    {currentVisibleFields.length === 0 ? (
+                      <div className="tc-field-empty">
+                        {multiTableFieldsLoading
+                          ? '正在加载字段...'
+                          : normalizedCurrentSearchKeyword
+                            ? '没有匹配的已加入字段，请调整搜索关键词。'
+                            : '当前视图还没有已加入字段。'}
+                      </div>
+                    ) : null}
+                  </div>
+                </section>
+
+                <section className="tc-field-panel">
+                  <div className="tc-panel-header">
+                    <div className="tc-panel-copy">
+                      <strong>未加入视图</strong>
+                      <span>这些字段仍属于当前数据表，但暂时不会在当前视图中显示。</span>
+                    </div>
+                    <div className="tc-panel-actions">
+                      <span className="tc-panel-count">{currentGroup.removedCount} 个字段</span>
+                      <button
+                        className="cm-btn cm-btn--sm"
+                        onClick={() => void handleShowAllFieldsInTargetView(currentGroup.tableId, currentGroup.targetViewId)}
+                        disabled={currentGroup.removedCount === 0}
+                      >
+                        全部加入
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="tc-field-table">
+                    <div className="tc-field-table-head">
+                      <span />
+                      <span>字段</span>
+                      <span>类型 / 组件 / 状态</span>
+                      <span style={{ textAlign: 'right' }}>操作</span>
+                    </div>
+                    {currentPendingFields.map((field) => {
+                      const binding = currentGroup.bindings[field.id]
+                      return (
+                        <div
+                          key={`${currentGroup.tableId}_${field.id}_hidden`}
+                          className="tc-field-row"
+                          onDoubleClick={() => openEditor(currentGroup.tableId, field.id)}
+                        >
+                          <span className="tc-drag-handle tc-drag-handle--disabled" title="未加入视图时不可排序">
+                            ⠿
+                          </span>
+                          <div className="tc-field-info">
+                            <div className="tc-field-name">{field.name}</div>
+                            <div className="tc-field-id">{field.id}</div>
+                          </div>
+                          <div className="tc-field-tags">
+                            <span className="tc-tag">{fieldTypeLabelByValue[field.type] ?? field.type}</span>
+                            <span className={`tc-tag ${binding ? 'tc-tag--processing' : ''}`}>
+                              {componentTypeLabelByValue[binding?.componentType ?? 'default'] ?? '默认'}
+                            </span>
+                            <span className="tc-tag tc-tag--gold">未加入视图</span>
+                          </div>
+                          <div className="tc-field-actions">
+                            <button
+                              className="cm-btn cm-btn--sm cm-btn--primary"
+                              title="加入视图"
+                              onClick={() => void toggleFieldVisibilityInTargetView(currentGroup.tableId, currentGroup.targetViewId, field)}
+                            >
+                              加入
+                            </button>
+                            <button
+                              className="cm-btn cm-btn--sm"
+                              title="配置组件"
+                              onClick={() => openEditor(currentGroup.tableId, field.id)}
+                            >
+                              配置
+                            </button>
+                            <DropdownMenu
+                              items={[
+                                { key: 'clearConfig', label: '删除组件配置', danger: true, disabled: !binding },
+                              ]}
+                              onClick={({ key }) => {
+                                if (key === 'clearConfig') {
+                                  void handleClearFieldBinding(field, currentGroup.tableId, currentGroup.targetViewId)
+                                }
+                              }}
+                            >
+                              <button className="cm-btn cm-btn--sm" title="更多操作">⋮</button>
+                            </DropdownMenu>
+                          </div>
+                        </div>
+                      )
+                    })}
+                    {currentPendingFields.length === 0 ? (
+                      <div className="tc-field-empty">
+                        {multiTableFieldsLoading
+                          ? '正在加载字段...'
+                          : normalizedCurrentSearchKeyword
+                            ? '没有匹配的未加入字段，请调整搜索关键词。'
+                            : '当前数据表的字段都已经加入当前视图。'}
+                      </div>
+                    ) : null}
+                  </div>
+                </section>
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       <ViewSetupWizard
         open={isSetupWizardOpen}

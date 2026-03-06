@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { gridApiClient } from '../../features/grid/api'
 import type { TableCatalogItem } from '../../features/grid/types/grid'
+import { invalidateTableCatalog, useTableCatalogVersion } from './catalogRefreshBus'
 
 const DEFAULT_BASE_ID = 'base_1'
 
@@ -16,11 +17,11 @@ export function useTableCatalog(baseId?: string): UseTableCatalogResult {
   const [tables, setTables] = useState<TableCatalogItem[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [refreshTick, setRefreshTick] = useState(0)
+  const refreshVersion = useTableCatalogVersion(resolvedBaseId)
 
   const refreshTables = useCallback(() => {
-    setRefreshTick((current) => current + 1)
-  }, [])
+    invalidateTableCatalog(resolvedBaseId)
+  }, [resolvedBaseId])
 
   useEffect(() => {
     let active = true
@@ -47,7 +48,7 @@ export function useTableCatalog(baseId?: string): UseTableCatalogResult {
     return () => {
       active = false
     }
-  }, [refreshTick, resolvedBaseId])
+  }, [refreshVersion, resolvedBaseId])
 
   return useMemo(
     () => ({

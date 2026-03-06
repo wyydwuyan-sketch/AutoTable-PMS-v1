@@ -74,7 +74,7 @@ export function ViewSetupWizard({
   return (
     <CustomModal
       open={open}
-      title={`初始化视图 · ${viewId}`}
+      title={`初始化视图字段 · ${viewId}`}
       onCancel={onCancel}
       onOk={handleComplete}
       okText="完成初始化"
@@ -82,11 +82,13 @@ export function ViewSetupWizard({
       width={860}
     >
       <div className="vsw-root">
-        <div className="vsw-meta">数据表：{tableId} · 共 {fields.length} 个字段</div>
+        <div className="vsw-meta">
+          当前视图默认为空，请手动选择要加入视图的字段。数据表：{tableId} · 共 {fields.length} 个字段
+        </div>
 
         <section className="vsw-section">
           <div className="vsw-section-head">
-            <strong>Step 1：选择可见字段</strong>
+            <strong>Step 1：选择要加入当前视图的字段</strong>
             <div className="vsw-actions">
               <button type="button" className="cm-btn cm-btn--sm" onClick={handleSelectAll}>全选</button>
               <button type="button" className="cm-btn cm-btn--sm" onClick={handleSelectNone}>全不选</button>
@@ -113,12 +115,12 @@ export function ViewSetupWizard({
 
         <section className="vsw-section">
           <div className="vsw-section-head">
-            <strong>Step 2：快速配置组件类型</strong>
-            <span className="vsw-muted">仅展示 Step 1 勾选字段</span>
+            <strong>Step 2：为已加入字段快速配置组件类型</strong>
+            <span className="vsw-muted">仅展示 Step 1 中已经加入视图的字段</span>
           </div>
 
           {checkedFields.length === 0 ? (
-            <div className="vsw-empty">当前未选择字段，初始化后该视图将不展示字段。</div>
+            <div className="vsw-empty">当前还没有加入字段，完成后该视图会保持空状态，可稍后继续添加。</div>
           ) : (
             <div className="vsw-table">
               <div className="vsw-table-head">

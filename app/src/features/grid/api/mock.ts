@@ -718,6 +718,9 @@ export const mockGridApi = createApiClient({
     const id = `viw_${mockViews.length + 1}`
     const defaultFolder = ensureMockFolder(tableId)
     const sameTableViews = mockViews.filter((view) => view.tableId === tableId)
+    const tableFieldIds = mockFields
+      .filter((field) => field.tableId === tableId)
+      .map((field) => field.id)
     const nextOrder =
       sameTableViews.length === 0
         ? 0
@@ -737,7 +740,11 @@ export const mockGridApi = createApiClient({
       viewRole: isDerived ? 'derived' : 'primary',
       name,
       type,
-      config: { ...DEFAULT_VIEW_CONFIG, order: nextOrder },
+      config: {
+        ...DEFAULT_VIEW_CONFIG,
+        order: nextOrder,
+        hiddenFieldIds: !isDerived && type === 'grid' ? tableFieldIds : DEFAULT_VIEW_CONFIG.hiddenFieldIds,
+      },
     }
     mockViews.push(created)
     return delay(created)

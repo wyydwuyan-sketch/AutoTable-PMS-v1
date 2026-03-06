@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { gridApiClient } from '../../features/grid/api'
 import type { TableCatalogItem, View, ViewCatalog, ViewCatalogItem, ViewFolderCatalog } from '../../features/grid/types/grid'
+import { useViewCatalogVersion } from './catalogRefreshBus'
 
 interface UseAppShellViewCatalogParams {
   tableItems: TableCatalogItem[]
@@ -153,6 +154,7 @@ export function useAppShellViewCatalog({
   views,
 }: UseAppShellViewCatalogParams) {
   const [snapshotCatalogsByTableId, setSnapshotCatalogsByTableId] = useState<Record<string, ViewCatalog>>({})
+  const refreshVersion = useViewCatalogVersion()
 
   useEffect(() => {
     if (tableItems.length === 0) {
@@ -188,7 +190,7 @@ export function useAppShellViewCatalog({
     return () => {
       active = false
     }
-  }, [tableItems])
+  }, [refreshVersion, tableItems])
 
   const tableNameMap = useMemo(
     () => new Map(tableItems.map((item, index) => [item.id, { name: item.name, order: index }])),

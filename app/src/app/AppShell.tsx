@@ -40,6 +40,7 @@ import { AppShellToolbar } from './components/AppShellToolbar'
 import { DropdownMenu } from '../features/grid/components/DropdownMenu'
 import { ViewTabsBar } from '../features/grid/viewTabs/ViewTabsBar'
 import { useAppShellViewCatalog } from './hooks/useAppShellViewCatalog'
+import { useViewCatalogVersion } from './hooks/catalogRefreshBus'
 import { useAppShellRouteSync } from './hooks/useAppShellRouteSync'
 import { useTableCatalog } from './hooks/useTableCatalog'
 const configRouteMap: Record<string, string> = {
@@ -365,6 +366,7 @@ export function AppShell() {
   const isDarkMode = themeMode === 'dark'
   const [isCreatingTable, setIsCreatingTable] = useState(false)
   const [pendingCreatedTableId, setPendingCreatedTableId] = useState<string | null>(null)
+  const viewCatalogVersion = useViewCatalogVersion()
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', themeMode)
@@ -445,6 +447,35 @@ export function AppShell() {
     if (!tableItems.some((item) => item.id === pendingCreatedTableId)) return
     setPendingCreatedTableId(null)
   }, [pendingCreatedTableId, tableItems])
+
+  useEffect(() => {
+    if (!tableId) return
+
+    let active = true
+
+    void (async () => {
+      try {
+        // Config pages mutate views outside the grid page loader, so the sidebar needs an explicit resync.
+        const nextViews = await gridApiClient.getViews(tableId)
+        if (!active) return
+        useGridStore.setState((state) => {
+          if (state.activeTableId !== tableId) return state
+          const normalizedViews = nextViews.filter((view) => view.tableId === tableId)
+          const activeView = normalizedViews.find((view) => view.id === state.activeViewId)
+          return {
+            views: normalizedViews,
+            viewConfig: activeView ? activeView.config : state.viewConfig,
+          }
+        })
+      } catch (error) {
+        console.error('[AppShell] 刷新当前数据表视图失败', error)
+      }
+    })()
+
+    return () => {
+      active = false
+    }
+  }, [tableId, viewCatalogVersion])
 
   const { openSidebarView } = useAppShellRouteSync({
     baseId,
@@ -927,9 +958,13 @@ export function AppShell() {
             },
       )
       if (!created) return
+      if (type === 'grid') {
+        navigate(`/b/${baseId}/t/${tableId}/v/${created.id}/config/components?setup=1`)
+        return
+      }
       openSidebarView(created)
     },
-    [activeFolder?.id, activePrimaryView, createView, openSidebarView, setToast, tableId],
+    [activeFolder?.id, activePrimaryView, baseId, createView, navigate, openSidebarView, setToast, tableId],
   )
   const addMenuItems = useMemo(
     () => [

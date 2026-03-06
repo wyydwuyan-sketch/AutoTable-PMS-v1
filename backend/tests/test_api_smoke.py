@@ -151,6 +151,23 @@ class ApiSmokeTests(unittest.TestCase):
         views = list_resp.json()
         self.assertTrue(any(view.get("id") == created.get("id") for view in views))
 
+    def test_create_primary_grid_view_starts_without_visible_fields(self) -> None:
+        fields_resp = self.client.get("/tables/tbl_1/fields", headers=self.headers)
+        self.assertEqual(fields_resp.status_code, 200)
+        field_ids = [item["id"] for item in fields_resp.json()]
+        self.assertGreaterEqual(len(field_ids), 1)
+
+        create_resp = self.client.post(
+            "/tables/tbl_1/views",
+            headers=self.headers,
+            json={"name": f"空白主视图-{uuid4().hex[:8]}", "type": "grid"},
+        )
+        self.assertEqual(create_resp.status_code, 200)
+        created = create_resp.json()
+        self.assertEqual(created.get("type"), "grid")
+        self.assertEqual(created.get("viewRole"), "primary")
+        self.assertEqual(set(created.get("config", {}).get("hiddenFieldIds", [])), set(field_ids))
+
     def test_records_endpoint_still_works(self) -> None:
         resp = self.client.get(
             "/tables/tbl_1/records",

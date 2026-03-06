@@ -1132,6 +1132,17 @@ def create_view(
     if "isEnabled" not in config_json:
         config_json["isEnabled"] = True
     folder_id, source_view_id, view_role = _resolve_view_hierarchy_for_create(db, tenant, table, payload)
+    if payload.config is None and payload.type == "grid" and view_role == "primary":
+        # Additional primary grid views should start with no visible fields so the
+        # user explicitly configures the column set instead of inheriting the table.
+        config_json["hiddenFieldIds"] = [
+            field.id
+            for field in db.scalars(
+                select(FieldModel)
+                .where(FieldModel.table_id == table_id, FieldModel.tenant_id == tenant.id)
+                .order_by(FieldModel.sort_order.asc(), FieldModel.id.asc())
+            ).all()
+        ]
 
     created = ViewModel(
         id=_next_id("viw"),

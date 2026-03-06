@@ -9,7 +9,6 @@ import {
   ProjectOutlined,
   SettingOutlined,
   TableOutlined,
-  UploadOutlined,
 } from '@ant-design/icons'
 import { DropdownMenu } from '../components/DropdownMenu'
 import { CustomModal } from '../components/CustomModal'
@@ -529,7 +528,7 @@ export function ViewManagement() {
         created = await gridApiClient.updateView(created.id, {
           config: {
             ...created.config,
-            hiddenFieldIds: [],
+            hiddenFieldIds: targetFields.map((field) => field.id),
             compactEmptyRows: true,
           },
         })
@@ -835,15 +834,26 @@ export function ViewManagement() {
           <button className="cm-btn" onClick={() => void handleCreateTable()} disabled={isCreatingTable}>
             <PlusOutlined /> 新增数据表
           </button>
-          <button className="cm-btn" onClick={() => void handleImportViewClick(tableId)} disabled={isCreatingView || isImportingView}>
-            <UploadOutlined /> 导入当前表格
-          </button>
-          <button className="cm-btn" onClick={() => openCreateFolderModal(tableId)} disabled={isCreatingFolder}>
-            <FolderOpenOutlined /> 新增当前表菜单
-          </button>
           <button className="cm-btn cm-btn--primary" onClick={() => openCreateViewModal(tableId, { mode: 'primary' })}>
             <PlusOutlined /> 新增当前表主视图
           </button>
+          <DropdownMenu
+            items={[
+              { key: 'importTable', label: '导入当前表格' },
+              { key: 'createFolder', label: '新增当前表菜单' },
+            ]}
+            onClick={({ key }) => {
+              if (key === 'importTable') return void handleImportViewClick(tableId)
+              if (key === 'createFolder') return void openCreateFolderModal(tableId)
+            }}
+          >
+            <button
+              className="cm-btn"
+              disabled={!tableId || isCreatingView || isImportingView || isCreatingFolder}
+            >
+              更多
+            </button>
+          </DropdownMenu>
         </div>
       </div>
 
@@ -859,11 +869,12 @@ export function ViewManagement() {
                 </div>
               </div>
               <div className="vm-table-section-actions">
-                <button className="cm-btn cm-btn--sm" onClick={() => void handleImportViewClick(section.tableId)} disabled={isImportingView}><UploadOutlined /> 导入</button>
-                <button className="cm-btn cm-btn--sm" onClick={() => openCreateFolderModal(section.tableId)} disabled={isCreatingFolder}><FolderOpenOutlined /> 新增菜单</button>
                 <button className="cm-btn cm-btn--sm cm-btn--primary" onClick={() => openCreateViewModal(section.tableId, { mode: 'primary' })} disabled={isCreatingView}><PlusOutlined /> 新增主视图</button>
                 <DropdownMenu
                   items={[
+                    { key: 'import', label: '导入数据到当前表' },
+                    { key: 'createFolder', label: '新增菜单' },
+                    { type: 'divider' },
                     { key: 'rename', label: '重命名数据表' },
                     { key: 'moveUp', label: '上移', disabled: sectionIndex === 0 },
                     { key: 'moveDown', label: '下移', disabled: sectionIndex === viewTableSections.length - 1 },
@@ -871,6 +882,8 @@ export function ViewManagement() {
                     { key: 'delete', label: '删除数据表', danger: true },
                   ]}
                   onClick={({ key }) => {
+                    if (key === 'import') return void handleImportViewClick(section.tableId)
+                    if (key === 'createFolder') return void openCreateFolderModal(section.tableId)
                     if (key === 'rename') return void handleRenameTable(section.tableId)
                     if (key === 'moveUp') return void moveTableInBase(section.tableId, 'up')
                     if (key === 'moveDown') return void moveTableInBase(section.tableId, 'down')
@@ -897,12 +910,11 @@ export function ViewManagement() {
                         </div>
                       </div>
                       <div className="vm-folder-actions">
-                        <button className="cm-btn cm-btn--sm" onClick={() => void handleImportViewClick(section.tableId, folder.id)} disabled={isImportingView}>
-                          <UploadOutlined /> 导入到菜单
-                        </button>
                         <button className="cm-btn cm-btn--sm" onClick={() => openCreateViewModal(section.tableId, { mode: 'primary', folderId: folder.id })}><PlusOutlined /> 新增主视图</button>
                         <DropdownMenu
                           items={[
+                            { key: 'import', label: '导入到当前菜单' },
+                            { type: 'divider' },
                             { key: 'rename', label: '重命名菜单' },
                             { key: 'moveUp', label: '上移', disabled: folderIndex === 0 },
                             { key: 'moveDown', label: '下移', disabled: folderIndex === section.folders.length - 1 },
@@ -910,6 +922,7 @@ export function ViewManagement() {
                             { key: 'delete', label: '删除菜单', danger: true },
                           ]}
                           onClick={({ key }) => {
+                            if (key === 'import') return void handleImportViewClick(section.tableId, folder.id)
                             if (key === 'rename') return void handleRenameFolder(folder)
                             if (key === 'moveUp') return void moveFolderInTable(section.tableId, folder.id, 'up')
                             if (key === 'moveDown') return void moveFolderInTable(section.tableId, folder.id, 'down')
