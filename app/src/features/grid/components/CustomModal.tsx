@@ -48,10 +48,10 @@ export function CustomModal({
             confirmLoading={confirmLoading}
             footer={resolvedFooter}
             keyboard={!confirmLoading}
-            maskClosable={!confirmLoading}
+            mask={{ closable: !confirmLoading }}
             closable={!confirmLoading}
             cancelButtonProps={{ disabled: confirmLoading || cancelDisabled }}
-            destroyOnClose={false}
+            destroyOnHidden={false}
         >
             {children}
         </Modal>

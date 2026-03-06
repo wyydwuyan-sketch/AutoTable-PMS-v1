@@ -6,7 +6,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 FieldType = Literal["text", "number", "date", "singleSelect", "multiSelect", "checkbox", "attachment", "image", "member"]
-ViewType = Literal["grid", "form", "kanban"]
+ViewType = Literal["grid", "form", "kanban", "calendar", "gantt", "dashboard"]
+ViewRole = Literal["primary", "derived"]
 FilterLogic = Literal["and", "or"]
 
 
@@ -24,6 +25,61 @@ class FieldOut(BaseModel):
     type: FieldType
     width: int | None = None
     options: list[FieldOptionOut] | None = None
+
+
+class TableCatalogOut(BaseModel):
+    id: str
+    baseId: str
+    name: str
+    defaultViewId: str | None = None
+    sortOrder: int = 0
+
+
+class TableCreateIn(BaseModel):
+    name: str
+
+
+class TablePatchIn(BaseModel):
+    name: str | None = None
+
+
+class TableReorderIn(BaseModel):
+    orderedIds: list[str] = Field(default_factory=list)
+
+
+class ViewFolderOut(BaseModel):
+    id: str
+    tableId: str
+    name: str
+    sortOrder: int = 0
+    isEnabled: bool = True
+
+
+class ViewCatalogItemOut(BaseModel):
+    view: "ViewOut"
+    derivedViews: list["ViewOut"] = Field(default_factory=list)
+
+
+class ViewFolderCatalogOut(ViewFolderOut):
+    primaryViews: list[ViewCatalogItemOut] = Field(default_factory=list)
+
+
+class ViewCatalogOut(BaseModel):
+    tableId: str
+    folders: list[ViewFolderCatalogOut] = Field(default_factory=list)
+
+
+class ViewFolderCreateIn(BaseModel):
+    name: str
+
+
+class ViewFolderPatchIn(BaseModel):
+    name: str | None = None
+    isEnabled: bool | None = None
+
+
+class ViewFolderReorderIn(BaseModel):
+    orderedIds: list[str] = Field(default_factory=list)
 
 
 class FieldCreateIn(BaseModel):
@@ -50,20 +106,34 @@ class ViewConfig(BaseModel):
 class ViewOut(BaseModel):
     id: str
     tableId: str
+    folderId: str | None = None
+    sourceViewId: str | None = None
+    viewRole: ViewRole = "primary"
     name: str
     type: ViewType
     config: ViewConfig
 
+
 class ViewCreateIn(BaseModel):
     name: str
     type: ViewType = "grid"
+    folderId: str | None = None
+    sourceViewId: str | None = None
+    viewRole: ViewRole | None = None
     config: ViewConfig | None = None
 
 
 class ViewPatchIn(BaseModel):
     name: str | None = None
     type: ViewType | None = None
+    folderId: str | None = None
+    sourceViewId: str | None = None
+    viewRole: ViewRole | None = None
     config: ViewConfig | None = None
+
+
+ViewCatalogItemOut.model_rebuild()
+ViewFolderCatalogOut.model_rebuild()
 
 
 class ImportViewFieldIn(BaseModel):
@@ -76,6 +146,7 @@ class ImportViewFieldIn(BaseModel):
 class ImportViewBundleIn(BaseModel):
     viewName: str
     viewType: ViewType = "grid"
+    folderId: str | None = None
     fields: list[ImportViewFieldIn] = Field(default_factory=list)
     records: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -310,12 +381,6 @@ class WorkflowConfigOut(BaseModel):
     statusOptions: list[FieldOptionOut] = Field(default_factory=list)
 
 
-class WorkflowConfigPatchIn(BaseModel):
-    statusFieldId: str | None = None
-    allowAnyTransition: bool = True
-    finalStatusOptionIds: list[str] = Field(default_factory=list)
-
-
 class WorkflowTransitionIn(BaseModel):
     fromOptionId: str
     toOptionIds: list[str] = Field(default_factory=list)
@@ -324,10 +389,6 @@ class WorkflowTransitionIn(BaseModel):
 class WorkflowTransitionPairOut(BaseModel):
     fromOptionId: str
     toOptionId: str
-
-
-class WorkflowTransitionPatchIn(BaseModel):
-    transitions: list[WorkflowTransitionIn] = Field(default_factory=list)
 
 
 class StatusTransitionIn(BaseModel):
@@ -386,6 +447,16 @@ class ViewTabPatchIn(BaseModel):
     visibility: Literal["personal", "shared"] | None = None
     payload: ViewTabPayload | None = None
     sortOrder: int | None = None
+
+
+class ViewTabCountIn(BaseModel):
+    tabId: str
+    payload: ViewTabPayload = Field(default_factory=ViewTabPayload)
+
+
+class BatchTabCountIn(BaseModel):
+    viewId: str
+    tabs: list[ViewTabCountIn] = Field(default_factory=list)
 
 
 class KanbanCardOut(BaseModel):

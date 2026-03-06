@@ -14,6 +14,7 @@ type PayloadLike = Partial<CurrentPayload> | null | undefined
 const OPERATION_LOG_EVENT = 'grid_operation_logs_updated'
 const ALL_DATA_TAB_ID = '__all_data__'
 const ALL_DATA_TAB_NAME = '全部数据'
+const COUNT_REFRESH_DEBOUNCE_MS = 320
 
 interface ViewTabsBarProps {
   viewId: string
@@ -105,11 +106,20 @@ export function ViewTabsBar({
     if (typeof window === 'undefined') {
       return undefined
     }
+    let timer: number | null = null
     const handler = () => {
-      setCountRefreshToken((value) => value + 1)
+      if (timer !== null) {
+        window.clearTimeout(timer)
+      }
+      timer = window.setTimeout(() => {
+        setCountRefreshToken((value) => value + 1)
+      }, COUNT_REFRESH_DEBOUNCE_MS)
     }
     window.addEventListener(OPERATION_LOG_EVENT, handler)
     return () => {
+      if (timer !== null) {
+        window.clearTimeout(timer)
+      }
       window.removeEventListener(OPERATION_LOG_EVENT, handler)
     }
   }, [])
@@ -121,19 +131,25 @@ export function ViewTabsBar({
       return
     }
     void (async () => {
-      const entries: Array<readonly [string, number]> = []
-      for (const tab of displayTabs) {
-        const payload = normalizePayload(tab.payload)
-        try {
-          const page = await gridApiClient.getRecords(tableId, viewId, '0', 1, payload)
-          entries.push([tab.id, page.totalCount] as const)
-        } catch {
-          entries.push([tab.id, 0] as const)
-        }
+      try {
+        const counts = await gridApiClient.batchTabCounts(
+          tableId,
+          viewId,
+          displayTabs.map((tab) => ({
+            tabId: tab.id,
+            payload: normalizePayload(tab.payload),
+          })),
+        )
         if (!active) return
+        const normalized: Record<string, number> = {}
+        for (const tab of displayTabs) {
+          normalized[tab.id] = Number.isFinite(counts[tab.id]) ? Number(counts[tab.id]) : 0
+        }
+        setTabCounts(normalized)
+      } catch {
+        if (!active) return
+        setTabCounts(Object.fromEntries(displayTabs.map((tab) => [tab.id, 0])))
       }
-      if (!active) return
-      setTabCounts(Object.fromEntries(entries))
     })()
     return () => {
       active = false

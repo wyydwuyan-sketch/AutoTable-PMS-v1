@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import json
 from datetime import date, timedelta
+from time import sleep
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, joinedload
 
 from ..access_helpers import _ensure_table_access, _ensure_view_exists
-from ..auth import get_current_tenant, get_current_user, write_audit_log
+from ..auth import get_current_tenant, get_current_user
 from ..db import get_db
 from ..models import (
     FieldModel,
@@ -17,7 +19,6 @@ from ..models import (
     RecordStatusLogModel,
     TableWorkflowConfigModel,
     TenantModel,
-    TenantRoleModel,
     UserModel,
     ViewModel,
     ViewPermissionModel,
@@ -25,6 +26,7 @@ from ..models import (
     WorkflowTransitionModel,
 )
 from ..schemas import (
+    BatchTabCountIn,
     FieldOptionOut,
     KanbanCardOut,
     KanbanColumnsOut,
@@ -38,17 +40,16 @@ from ..schemas import (
     ViewTabPatchIn,
     ViewTabPayload,
     WorkflowConfigOut,
-    WorkflowConfigPatchIn,
     WorkflowTransitionPairOut,
-    WorkflowTransitionPatchIn,
 )
 from ..services import (
     apply_filters_and_sorts,
+    build_record_filter_clause,
     now_utc_naive,
     serialize_record,
     upsert_record_values,
 )
-from ..tenant_helpers import _get_membership, _get_membership_role, _next_id
+from ..tenant_helpers import _get_membership_role, _next_id
 
 router = APIRouter()
 
@@ -81,82 +82,6 @@ def get_table_workflow(
     )
 
 
-@router.put("/tables/{table_id}/workflow", response_model=WorkflowConfigOut)
-def upsert_table_workflow(
-    table_id: str,
-    payload: WorkflowConfigPatchIn,
-    request: Request,
-    db: Session = Depends(get_db),
-    user: UserModel = Depends(get_current_user),
-    tenant: TenantModel = Depends(get_current_tenant),
-) -> WorkflowConfigOut:
-    _ensure_table_access(
-        db,
-        table_id=table_id,
-        tenant_id=tenant.id,
-        user_id=user.id,
-        request=request,
-        access="write",
-    )
-    _ensure_workflow_manage_allowed(db, user.id, tenant.id)
-
-    config = _get_or_create_workflow_config(db, tenant.id, table_id)
-    status_field: FieldModel | None = None
-    if payload.statusFieldId:
-        status_field = db.scalar(
-            select(FieldModel).where(
-                FieldModel.id == payload.statusFieldId,
-                FieldModel.table_id == table_id,
-                FieldModel.tenant_id == tenant.id,
-            )
-        )
-        if not status_field:
-            raise HTTPException(status_code=404, detail="状态字段不存在")
-        if status_field.type != "singleSelect":
-            raise HTTPException(status_code=400, detail="状态字段必须是单选字段")
-        config.status_field_id = status_field.id
-    elif payload.statusFieldId is None:
-        config.status_field_id = None
-
-    if config.status_field_id:
-        status_field = _load_status_field(db, tenant.id, table_id, config.status_field_id)
-    options = _field_options(status_field)
-    option_ids = {item.id for item in options}
-    invalid_final_options = [item for item in payload.finalStatusOptionIds if item not in option_ids]
-    if invalid_final_options:
-        raise HTTPException(status_code=400, detail=f"终态选项不存在: {', '.join(invalid_final_options)}")
-
-    config.allow_any_transition = payload.allowAnyTransition
-    config.final_status_option_ids_json = list(dict.fromkeys(payload.finalStatusOptionIds))
-    config.updated_at = now_utc_naive()
-
-    if payload.allowAnyTransition:
-        db.query(WorkflowTransitionModel).filter(
-            WorkflowTransitionModel.tenant_id == tenant.id,
-            WorkflowTransitionModel.table_id == table_id,
-        ).delete(synchronize_session=False)
-
-    db.commit()
-    db.refresh(config)
-    write_audit_log(
-        db,
-        action="update_workflow_config",
-        result="success",
-        request=request,
-        user_id=user.id,
-        tenant_id=tenant.id,
-        resource_type="table",
-        resource_id=table_id,
-    )
-    return WorkflowConfigOut(
-        tableId=table_id,
-        statusFieldId=config.status_field_id,
-        allowAnyTransition=bool(config.allow_any_transition),
-        finalStatusOptionIds=list(config.final_status_option_ids_json or []),
-        statusOptions=options,
-    )
-
-
 @router.get("/tables/{table_id}/workflow/transitions", response_model=list[WorkflowTransitionPairOut])
 def get_workflow_transitions(
     table_id: str,
@@ -181,72 +106,6 @@ def get_workflow_transitions(
     ).all()
     rows = sorted(transitions, key=lambda item: (item.from_option_id, item.to_option_id))
     return [WorkflowTransitionPairOut(fromOptionId=item.from_option_id, toOptionId=item.to_option_id) for item in rows]
-
-
-@router.put("/tables/{table_id}/workflow/transitions", response_model=list[WorkflowTransitionPairOut])
-def put_workflow_transitions(
-    table_id: str,
-    payload: WorkflowTransitionPatchIn,
-    request: Request,
-    db: Session = Depends(get_db),
-    user: UserModel = Depends(get_current_user),
-    tenant: TenantModel = Depends(get_current_tenant),
-) -> list[WorkflowTransitionPairOut]:
-    _ensure_table_access(
-        db,
-        table_id=table_id,
-        tenant_id=tenant.id,
-        user_id=user.id,
-        request=request,
-        access="write",
-    )
-    _ensure_workflow_manage_allowed(db, user.id, tenant.id)
-
-    config = _get_or_create_workflow_config(db, tenant.id, table_id)
-    if not config.status_field_id:
-        raise HTTPException(status_code=400, detail="请先配置状态字段")
-    status_field = _load_status_field(db, tenant.id, table_id, config.status_field_id)
-    options = _field_options(status_field)
-    option_ids = {item.id for item in options}
-
-    pairs: set[tuple[str, str]] = set()
-    for row in payload.transitions:
-        if row.fromOptionId not in option_ids:
-            raise HTTPException(status_code=400, detail=f"非法 fromOptionId: {row.fromOptionId}")
-        for target in row.toOptionIds:
-            if target not in option_ids:
-                raise HTTPException(status_code=400, detail=f"非法 toOptionId: {target}")
-            pairs.add((row.fromOptionId, target))
-
-    db.query(WorkflowTransitionModel).filter(
-        WorkflowTransitionModel.tenant_id == tenant.id,
-        WorkflowTransitionModel.table_id == table_id,
-    ).delete(synchronize_session=False)
-    for from_option_id, to_option_id in sorted(pairs):
-        db.add(
-            WorkflowTransitionModel(
-                tenant_id=tenant.id,
-                table_id=table_id,
-                from_option_id=from_option_id,
-                to_option_id=to_option_id,
-                created_at=now_utc_naive(),
-            )
-        )
-
-    config.allow_any_transition = False
-    config.updated_at = now_utc_naive()
-    db.commit()
-    write_audit_log(
-        db,
-        action="update_workflow_transitions",
-        result="success",
-        request=request,
-        user_id=user.id,
-        tenant_id=tenant.id,
-        resource_type="table",
-        resource_id=table_id,
-    )
-    return [WorkflowTransitionPairOut(fromOptionId=left, toOptionId=right) for left, right in sorted(pairs)]
 
 
 @router.post("/records/{record_id}/status-transition", response_model=StatusTransitionOut)
@@ -417,6 +276,71 @@ def get_view_tabs(
         )
         for item in visible_tabs
     ]
+
+
+@router.post("/tables/{table_id}/tab-counts", response_model=dict[str, int])
+def batch_tab_counts(
+    table_id: str,
+    payload: BatchTabCountIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: UserModel = Depends(get_current_user),
+    tenant: TenantModel = Depends(get_current_tenant),
+) -> dict[str, int]:
+    _ensure_table_access(
+        db,
+        table_id=table_id,
+        tenant_id=tenant.id,
+        user_id=user.id,
+        request=request,
+        access="read",
+    )
+    view = _ensure_view_access(db, payload.viewId, tenant.id, user.id, request, access="read")
+    if view.table_id != table_id:
+        raise HTTPException(status_code=400, detail="viewId 与 tableId 不匹配")
+    if not payload.tabs:
+        return {}
+
+    fields = db.scalars(
+        select(FieldModel).where(
+            FieldModel.table_id == table_id,
+            FieldModel.tenant_id == tenant.id,
+        )
+    ).all()
+    fields_by_id = {field.id: field for field in fields}
+    all_count = _count_table_records_with_retry(db, table_id=table_id, tenant_id=tenant.id)
+    counts: dict[str, int] = {}
+    fallback_tabs: list[tuple[str, ViewTabPayload]] = []
+    for tab in payload.tabs:
+        tab_payload = ViewTabPayload.model_validate(tab.payload)
+        if not tab_payload.filters:
+            counts[tab.tabId] = all_count
+            continue
+        matched_count = _count_records_for_tab_filters_with_retry(
+            db,
+            table_id=table_id,
+            tenant_id=tenant.id,
+            fields_by_id=fields_by_id,
+            filters=tab_payload.filters,
+            filter_logic=tab_payload.filterLogic,
+        )
+        if matched_count is None:
+            fallback_tabs.append((tab.tabId, tab_payload))
+            continue
+        counts[tab.tabId] = matched_count
+
+    if fallback_tabs:
+        records, _ = _load_table_records_and_fields_with_retry(db, table_id=table_id, tenant_id=tenant.id)
+        for tab_id, tab_payload in fallback_tabs:
+            filtered = apply_filters_and_sorts(
+                records,
+                fields_by_id,
+                tab_payload.filters,
+                [],
+                tab_payload.filterLogic,
+            )
+            counts[tab_id] = len(filtered)
+    return counts
 
 
 @router.post("/views/{view_id}/tabs", response_model=ViewTabOut)
@@ -720,23 +644,6 @@ def _field_options(field: FieldModel | None) -> list[FieldOptionOut]:
     return options
 
 
-def _ensure_workflow_manage_allowed(db: Session, user_id: str, tenant_id: str) -> None:
-    membership = _get_membership(db, user_id, tenant_id)
-    if not membership:
-        raise HTTPException(status_code=403, detail="当前租户无权限")
-    if membership.role == "owner" or membership.role_key == "admin":
-        return
-    role = db.scalar(
-        select(TenantRoleModel).where(
-            TenantRoleModel.tenant_id == tenant_id,
-            TenantRoleModel.key == membership.role_key,
-        )
-    )
-    if role and role.can_manage_permissions:
-        return
-    raise HTTPException(status_code=403, detail="仅管理员可配置工作流")
-
-
 def _ensure_view_access(
     db: Session,
     view_id: str,
@@ -915,3 +822,125 @@ def _resolve_dynamic_filters(filters: list[dict[str, Any]], user: UserModel) -> 
             item["value"] = _resolve_value(original_value)
         resolved.append(item)
     return resolved
+
+
+def _load_table_records_and_fields_with_retry(
+    db: Session,
+    *,
+    table_id: str,
+    tenant_id: str,
+    retries: int = 2,
+) -> tuple[list[RecordModel], list[FieldModel]]:
+    for attempt in range(retries + 1):
+        try:
+            records = db.scalars(
+                select(RecordModel)
+                .where(
+                    RecordModel.table_id == table_id,
+                    RecordModel.tenant_id == tenant_id,
+                )
+                .options(joinedload(RecordModel.values))
+                .order_by(RecordModel.created_at.desc(), RecordModel.id.desc())
+            ).unique().all()
+            fields = db.scalars(
+                select(FieldModel).where(
+                    FieldModel.table_id == table_id,
+                    FieldModel.tenant_id == tenant_id,
+                )
+            ).all()
+            return records, fields
+        except OperationalError as exc:
+            if not _is_sqlite_lock_error(exc):
+                raise
+            db.rollback()
+            if attempt >= retries:
+                raise HTTPException(status_code=503, detail="数据库繁忙，请稍后重试") from exc
+            sleep(0.12 * (attempt + 1))
+    return [], []
+
+
+def _count_table_records_with_retry(
+    db: Session,
+    *,
+    table_id: str,
+    tenant_id: str,
+    retries: int = 2,
+) -> int:
+    stmt = (
+        select(func.count())
+        .select_from(RecordModel)
+        .where(
+            RecordModel.table_id == table_id,
+            RecordModel.tenant_id == tenant_id,
+        )
+    )
+    for attempt in range(retries + 1):
+        try:
+            return int(db.scalar(stmt) or 0)
+        except OperationalError as exc:
+            if not _is_sqlite_lock_error(exc):
+                raise
+            db.rollback()
+            if attempt >= retries:
+                raise HTTPException(status_code=503, detail="数据库繁忙，请稍后重试") from exc
+            sleep(0.12 * (attempt + 1))
+    return 0
+
+
+def _count_records_for_tab_filters_with_retry(
+    db: Session,
+    *,
+    table_id: str,
+    tenant_id: str,
+    fields_by_id: dict[str, FieldModel],
+    filters: list[dict[str, Any]],
+    filter_logic: str,
+    retries: int = 2,
+) -> int | None:
+    stmt = _build_tab_count_stmt(
+        table_id=table_id,
+        tenant_id=tenant_id,
+        fields_by_id=fields_by_id,
+        filters=filters,
+        filter_logic=filter_logic,
+    )
+    if stmt is None:
+        return None
+    for attempt in range(retries + 1):
+        try:
+            return int(db.scalar(stmt) or 0)
+        except OperationalError as exc:
+            if not _is_sqlite_lock_error(exc):
+                raise
+            db.rollback()
+            if attempt >= retries:
+                raise HTTPException(status_code=503, detail="数据库繁忙，请稍后重试") from exc
+            sleep(0.12 * (attempt + 1))
+    return None
+
+
+def _build_tab_count_stmt(
+    *,
+    table_id: str,
+    tenant_id: str,
+    fields_by_id: dict[str, FieldModel],
+    filters: list[dict[str, Any]],
+    filter_logic: str,
+):
+    filter_clause = build_record_filter_clause(fields_by_id, filters, filter_logic)
+    if filter_clause is None:
+        return None
+    return (
+        select(func.count())
+        .select_from(RecordModel)
+        .where(
+            RecordModel.table_id == table_id,
+            RecordModel.tenant_id == tenant_id,
+            filter_clause,
+        )
+    )
+
+
+def _is_sqlite_lock_error(exc: OperationalError) -> bool:
+    message = str(getattr(exc, "orig", exc)).lower()
+    return "database is locked" in message or "database table is locked" in message

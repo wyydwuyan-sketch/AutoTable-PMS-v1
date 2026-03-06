@@ -47,11 +47,8 @@ export function DashboardPage() {
     <div style={{ padding: 24, background: 'var(--bg-app)', minHeight: '100vh' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <button className="cm-btn" onClick={() => navigate('/b/base_1/t/tbl_1/v/viw_1')}>
+          <button className="cm-btn" onClick={() => navigate('/')}>
             ← 返回表格
-          </button>
-          <button className="cm-btn" onClick={() => navigate('/integrations')}>
-            接口管理
           </button>
           <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>首页大屏 / 只读预览</span>
         </div>
@@ -76,7 +73,7 @@ export function DashboardPage() {
           <div className="app-empty-state-emoji" aria-hidden="true">📊</div>
           <div className="app-empty-state-title">大屏暂未配置</div>
           <div className="app-empty-state-desc">先前往配置页面添加组件与布局，保存后即可在这里预览。</div>
-          <button className="cm-btn cm-btn--primary" onClick={() => navigate('/b/base_1/t/tbl_1/v/viw_1/config/dashboard')}>
+          <button className="cm-btn cm-btn--primary" onClick={() => navigate('/')}>
             ⚙ 打开大屏配置
           </button>
         </div>

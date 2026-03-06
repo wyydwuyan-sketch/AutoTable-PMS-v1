@@ -20,12 +20,16 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Outlet, useLocation, useNavigate, useParams } from 'react-router-dom'
 import * as XLSX from 'xlsx'
 import { saveAs } from 'file-saver'
-import { useGridStore } from '../features/grid/store/gridStore'
+import { gridApiClient } from '../features/grid/api'
+import type { RecordQueryOptions } from '../features/grid/api/client'
+import { CustomModal } from '../features/grid/components/CustomModal'
+import { useGridStore, type ImportRecordInput } from '../features/grid/store/gridStore'
 import { useAuthStore } from '../features/auth/authStore'
 import { useShallow } from 'zustand/react/shallow'
 import { FilterModal } from '../features/grid/components/modals/FilterModal'
 import { SortModal } from '../features/grid/components/modals/SortModal'
 import { CreateRecordModal } from '../features/grid/components/modals/CreateRecordModal'
+import type { Field, RecordModel, ReferenceMember } from '../features/grid/types/grid'
 import { confirmAction } from '../utils/confirmAction'
 import { getApiErrorMessage } from '../utils/apiError'
 import { promptForText } from '../utils/promptForText'
@@ -37,16 +41,243 @@ import { DropdownMenu } from '../features/grid/components/DropdownMenu'
 import { ViewTabsBar } from '../features/grid/viewTabs/ViewTabsBar'
 import { useAppShellViewCatalog } from './hooks/useAppShellViewCatalog'
 import { useAppShellRouteSync } from './hooks/useAppShellRouteSync'
-import { tableItems } from '../config/tables'
+import { useTableCatalog } from './hooks/useTableCatalog'
 const configRouteMap: Record<string, string> = {
   'config:views': 'config/views',
   'config:components': 'config/components',
   'config:showcase': 'config/showcase',
-  'config:workflow': 'config/workflow',
   'config:ai-models': 'config/ai-models',
   'config:members': 'config/members',
 }
 const MAX_IMPORT_FILE_SIZE_BYTES = 10 * 1024 * 1024
+const EXPORT_FETCH_PAGE_SIZE = 500
+const IMPORT_TRUE_LITERALS = new Set(['true', '1', 'yes', 'y', '是', '已选', 'checked'])
+const IMPORT_FALSE_LITERALS = new Set(['false', '0', 'no', 'n', '否', '未选', 'unchecked'])
+
+type ExportScope = 'current_page' | 'all_records' | 'current_filters'
+
+const formatExportCellValue = (value: unknown): string | number | boolean => {
+  if (value == null) return ''
+  if (Array.isArray(value)) {
+    return value.map((item) => formatExportCellValue(item)).join(', ')
+  }
+  if (typeof value === 'object') {
+    return JSON.stringify(value)
+  }
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? value : String(value)
+}
+
+const sanitizeFileNameSegment = (value: string) => {
+  const normalized = value.replace(/[\\/:*?"<>|]+/g, '_').trim()
+  return normalized.length > 0 ? normalized : 'export'
+}
+
+const getViewModeIcon = (type: 'grid' | 'form' | 'kanban') => {
+  if (type === 'kanban') return <ProjectOutlined />
+  if (type === 'form') return <AppstoreOutlined />
+  return <TableOutlined />
+}
+
+const getViewModeLabel = (type: 'grid' | 'form' | 'kanban') => {
+  if (type === 'kanban') return '数据看板'
+  if (type === 'form') return '表单视图'
+  return '表格视图'
+}
+
+const formatDateForImport = (value: Date) => {
+  const year = value.getFullYear()
+  const month = `${value.getMonth() + 1}`.padStart(2, '0')
+  const day = `${value.getDate()}`.padStart(2, '0')
+  const hours = value.getHours()
+  const minutes = value.getMinutes()
+  const seconds = value.getSeconds()
+  if (hours === 0 && minutes === 0 && seconds === 0) {
+    return `${year}-${month}-${day}`
+  }
+  return `${year}-${month}-${day}T${`${hours}`.padStart(2, '0')}:${`${minutes}`.padStart(2, '0')}:${`${seconds}`.padStart(2, '0')}`
+}
+
+const splitImportListValue = (value: string) =>
+  value
+    .split(/[\n,，;；|]+/)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+
+const buildFieldTypeLabel = (type: Field['type']) => {
+  switch (type) {
+    case 'text':
+      return '文本'
+    case 'number':
+      return '数字'
+    case 'date':
+      return '日期'
+    case 'singleSelect':
+      return '单选'
+    case 'multiSelect':
+      return '多选'
+    case 'checkbox':
+      return '复选框'
+    case 'attachment':
+      return '附件'
+    case 'image':
+      return '图片'
+    case 'member':
+      return '成员'
+    default:
+      return type
+  }
+}
+
+const buildFieldImportInstruction = (field: Field) => {
+  switch (field.type) {
+    case 'text':
+      return '可填写任意文本'
+    case 'number':
+      return '请填写数字，例如 100 或 88.5'
+    case 'date':
+      return '请填写日期字符串，例如 2026-03-06 或 2026-03-06T09:30:00'
+    case 'singleSelect':
+      return '支持填写选项名称或选项ID'
+    case 'multiSelect':
+      return '多个值用逗号分隔，支持填写选项名称或选项ID'
+    case 'checkbox':
+      return '支持 true/false、是/否、1/0'
+    case 'attachment':
+      return '多个文件 URL 用逗号或换行分隔'
+    case 'image':
+      return '多个图片 URL 用逗号或换行分隔'
+    case 'member':
+      return '支持填写成员用户名或成员ID'
+    default:
+      return ''
+  }
+}
+
+const buildFieldSampleValue = (field: Field, members: ReferenceMember[]) => {
+  switch (field.type) {
+    case 'text':
+      return `${field.name}示例`
+    case 'number':
+      return 100
+    case 'date':
+      return '2026-03-06'
+    case 'singleSelect':
+      return field.options?.[0]?.name ?? field.options?.[0]?.id ?? ''
+    case 'multiSelect':
+      return (field.options ?? [])
+        .slice(0, 2)
+        .map((item) => item.name || item.id)
+        .join(', ')
+    case 'checkbox':
+      return true
+    case 'attachment':
+      return 'https://example.com/files/example.pdf'
+    case 'image':
+      return 'https://example.com/images/example.png'
+    case 'member':
+      return members[0]?.username ?? members[0]?.userId ?? ''
+    default:
+      return ''
+  }
+}
+
+const buildOptionLookup = (field: Field) => {
+  const lookup = new Map<string, string>()
+  ;(field.options ?? []).forEach((item) => {
+    lookup.set(item.id, item.id)
+    lookup.set(item.name, item.id)
+  })
+  return lookup
+}
+
+const buildMemberLookup = (members: ReferenceMember[]) => {
+  const lookup = new Map<string, string>()
+  members.forEach((item) => {
+    lookup.set(item.userId, item.userId)
+    lookup.set(item.username, item.userId)
+  })
+  return lookup
+}
+
+const normalizeImportCellValue = (field: Field, rawValue: unknown, members: ReferenceMember[]) => {
+  if (rawValue == null) {
+    return undefined
+  }
+  if (typeof rawValue === 'string' && rawValue.trim() === '') {
+    return undefined
+  }
+
+  switch (field.type) {
+    case 'text':
+      return typeof rawValue === 'string' ? rawValue : String(rawValue)
+    case 'number': {
+      if (typeof rawValue === 'number') {
+        return rawValue
+      }
+      const next = Number(String(rawValue).trim())
+      if (Number.isNaN(next)) {
+        throw new Error(`字段 ${field.name} 需要数字`)
+      }
+      return next
+    }
+    case 'date': {
+      if (rawValue instanceof Date) {
+        return formatDateForImport(rawValue)
+      }
+      if (typeof rawValue === 'number') {
+        const parsed = XLSX.SSF.parse_date_code(rawValue)
+        if (!parsed) {
+          throw new Error(`字段 ${field.name} 日期格式非法`)
+        }
+        return formatDateForImport(new Date(parsed.y, parsed.m - 1, parsed.d, parsed.H, parsed.M, parsed.S))
+      }
+      return String(rawValue).trim()
+    }
+    case 'singleSelect': {
+      const normalized = String(rawValue).trim()
+      const optionLookup = buildOptionLookup(field)
+      return optionLookup.get(normalized) ?? normalized
+    }
+    case 'multiSelect': {
+      const optionLookup = buildOptionLookup(field)
+      const values =
+        Array.isArray(rawValue)
+          ? rawValue.map((item) => String(item).trim()).filter((item) => item.length > 0)
+          : splitImportListValue(String(rawValue))
+      return values.map((item) => optionLookup.get(item) ?? item)
+    }
+    case 'checkbox': {
+      if (typeof rawValue === 'boolean') {
+        return rawValue
+      }
+      if (typeof rawValue === 'number') {
+        return rawValue !== 0
+      }
+      const normalized = String(rawValue).trim().toLowerCase()
+      if (IMPORT_TRUE_LITERALS.has(normalized)) {
+        return true
+      }
+      if (IMPORT_FALSE_LITERALS.has(normalized)) {
+        return false
+      }
+      throw new Error(`字段 ${field.name} 需要布尔值，可填写 true/false、是/否、1/0`)
+    }
+    case 'attachment':
+    case 'image': {
+      if (Array.isArray(rawValue)) {
+        return rawValue.map((item) => String(item).trim()).filter((item) => item.length > 0)
+      }
+      return splitImportListValue(String(rawValue))
+    }
+    case 'member': {
+      const normalized = String(rawValue).trim()
+      const memberLookup = buildMemberLookup(members)
+      return memberLookup.get(normalized) ?? normalized
+    }
+    default:
+      return rawValue
+  }
+}
 
 const withMenuIcon = (icon: ReactNode, text: string) => (
   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
@@ -58,7 +289,8 @@ const withMenuIcon = (icon: ReactNode, text: string) => (
 export function AppShell() {
   const navigate = useNavigate()
   const location = useLocation()
-  const { baseId = 'base_1', tableId = 'tbl_1', viewId = 'viw_1' } = useParams()
+  const { baseId = 'base_1', tableId = '', viewId = '' } = useParams()
+  const { tables: tableItems, isLoading: tableCatalogLoading, refreshTables } = useTableCatalog(baseId)
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => resolveInitialTheme())
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [sidebarGroupsOpen, setSidebarGroupsOpen] = useState({
@@ -70,6 +302,7 @@ export function AppShell() {
   const {
     fields,
     pageRecordCount,
+    totalRecords,
     views,
     selectedRecordIds,
     isAllRecordsSelected,
@@ -89,6 +322,7 @@ export function AppShell() {
     useShallow((state) => ({
       fields: state.fields,
       pageRecordCount: state.records.length,
+      totalRecords: state.totalRecords,
       views: state.views,
       selectedRecordIds: state.selectedRecordIds,
       isAllRecordsSelected: state.isAllRecordsSelected,
@@ -129,6 +363,8 @@ export function AppShell() {
     })),
   )
   const isDarkMode = themeMode === 'dark'
+  const [isCreatingTable, setIsCreatingTable] = useState(false)
+  const [pendingCreatedTableId, setPendingCreatedTableId] = useState<string | null>(null)
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', themeMode)
@@ -164,7 +400,6 @@ export function AppShell() {
   const isViewManageRoute = location.pathname.includes('/config/views')
   const isComponentsRoute = location.pathname.includes('/config/components')
   const isShowcaseRoute = location.pathname.includes('/config/showcase')
-  const isWorkflowRoute = location.pathname.includes('/config/workflow')
   const isMembersRoute = location.pathname.includes('/config/members')
   const isAiModelsRoute = location.pathname.includes('/config/ai-models')
   const isFormSetupRoute = location.pathname.includes('/form-setup')
@@ -174,18 +409,43 @@ export function AppShell() {
     isViewManageRoute ||
     isComponentsRoute ||
     isShowcaseRoute ||
-    isWorkflowRoute ||
     isMembersRoute ||
     isAiModelsRoute ||
     isFormSetupRoute
   const showViewTabs = !isConfigLikeRoute && !isFormRoute
   const showGridToolbar = !isConfigLikeRoute && !isFormRoute && !isKanbanRoute
   const canViewBusinessConfig = role === 'owner' || roleKey === 'admin'
-  const { tableNameMap, visibleViews, sidebarVisibleViews } = useAppShellViewCatalog({
+  const { tableNameMap, visibleViews, allVisibleViews, sidebarFolders, activeFolder, activePrimaryView, activeModeViews } = useAppShellViewCatalog({
     tableItems,
     tableId,
+    viewId,
     views,
   })
+
+  useEffect(() => {
+    if (tableCatalogLoading) return
+    if (pendingCreatedTableId && pendingCreatedTableId === tableId && !tableItems.some((item) => item.id === pendingCreatedTableId)) {
+      return
+    }
+    if (tableItems.length === 0) return
+    if (tableItems.some((item) => item.id === tableId)) return
+    const fallbackView = allVisibleViews[0]
+    if (fallbackView) {
+      navigate(`/b/${baseId}/t/${fallbackView.tableId}/v/${fallbackView.id}`, { replace: true })
+      return
+    }
+    const fallbackTable = tableItems.find((item) => item.defaultViewId) ?? tableItems[0]
+    if (fallbackTable?.defaultViewId) {
+      navigate(`/b/${baseId}/t/${fallbackTable.id}/v/${fallbackTable.defaultViewId}`, { replace: true })
+    }
+  }, [allVisibleViews, baseId, navigate, pendingCreatedTableId, tableCatalogLoading, tableId, tableItems])
+
+  useEffect(() => {
+    if (!pendingCreatedTableId) return
+    if (!tableItems.some((item) => item.id === pendingCreatedTableId)) return
+    setPendingCreatedTableId(null)
+  }, [pendingCreatedTableId, tableItems])
+
   const { openSidebarView } = useAppShellRouteSync({
     baseId,
     tableId,
@@ -200,7 +460,6 @@ export function AppShell() {
     isViewManageRoute,
     isComponentsRoute,
     isShowcaseRoute,
-    isWorkflowRoute,
     isMembersRoute,
     isAiModelsRoute,
   })
@@ -212,6 +471,11 @@ export function AppShell() {
   const [viewTabsReloadToken, setViewTabsReloadToken] = useState(0)
   const [isImporting, setIsImporting] = useState(false)
   const [isExporting, setIsExporting] = useState(false)
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false)
+  const [selectedImportFile, setSelectedImportFile] = useState<File | null>(null)
+  const [importDialogError, setImportDialogError] = useState<string | null>(null)
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false)
+  const [exportScope, setExportScope] = useState<ExportScope>('current_page')
   const [fieldDisplayOpen, setFieldDisplayOpen] = useState(false)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -237,6 +501,31 @@ export function AppShell() {
   const hasSortSummary = viewConfig.sorts.length > 0
   const canDeleteSelectionNow = canDeleteRecord && hasSelectedRecords
   const deleteButtonLabel = isAllRecordsSelected ? `删除本页（${pageRecordCount}）` : `删除已选（${selectedRecordIds.length}）`
+  const handleCreateTable = useCallback(async () => {
+    if (isCreatingTable || !canViewBusinessConfig) return
+    const name = await promptForText('请输入数据表名称', '', '数据表名称')
+    if (!name) return
+    const trimmedName = name.trim()
+    if (!trimmedName) {
+      setToast('请先输入数据表名称。')
+      return
+    }
+    setIsCreatingTable(true)
+    try {
+      const created = await gridApiClient.createTable(baseId, trimmedName)
+      if (!created.defaultViewId) {
+        throw new Error('新数据表未生成默认视图')
+      }
+      setPendingCreatedTableId(created.id)
+      refreshTables()
+      navigate(`/b/${baseId}/t/${created.id}/v/${created.defaultViewId}`)
+      setToast(`数据表「${created.name}」已创建。`)
+    } catch (error) {
+      setToast(getApiErrorMessage(error, '创建数据表失败。'))
+    } finally {
+      setIsCreatingTable(false)
+    }
+  }, [baseId, canViewBusinessConfig, isCreatingTable, navigate, refreshTables, setToast])
   const orderedFields = useMemo(() => {
     const fieldOrderIds = viewConfig.fieldOrderIds ?? fields.map((field) => field.id)
     const indexMap = new Map(fieldOrderIds.map((id, index) => [id, index]))
@@ -249,30 +538,30 @@ export function AppShell() {
     })
   }, [fields, viewConfig.fieldOrderIds])
   const hiddenFieldSet = useMemo(() => new Set(viewConfig.hiddenFieldIds ?? []), [viewConfig.hiddenFieldIds])
+  const visibleFieldsForExport = useMemo(
+    () => orderedFields.filter((field) => !hiddenFieldSet.has(field.id)),
+    [hiddenFieldSet, orderedFields],
+  )
   const visibleFieldCount = useMemo(
     () => orderedFields.filter((field) => !hiddenFieldSet.has(field.id)).length,
     [hiddenFieldSet, orderedFields],
   )
   const toolbarCollapseToMore = viewportWidth < 1380
   const toolbarUltraCompact = viewportWidth < 1220
-  const currentTableViews = useMemo(
-    () => visibleViews.filter((view) => view.tableId === tableId),
-    [visibleViews, tableId],
-  )
   const activeView = useMemo(
-    () => currentTableViews.find((view) => view.id === viewId) ?? currentTableViews[0] ?? null,
-    [currentTableViews, viewId],
+    () => activeModeViews.find((view) => view.id === viewId) ?? visibleViews.find((view) => view.id === viewId) ?? activePrimaryView ?? null,
+    [activeModeViews, activePrimaryView, viewId, visibleViews],
   )
   const configRouteAnchorView = useMemo(
     () =>
-      sidebarVisibleViews.find((view) => view.id === viewId && view.tableId === tableId) ??
+      allVisibleViews.find((view) => view.id === viewId && view.tableId === tableId) ??
       visibleViews.find((view) => view.id === viewId) ??
       visibleViews[0] ??
-      sidebarVisibleViews[0] ??
+      allVisibleViews[0] ??
       views.find((view) => view.id === viewId && view.tableId === tableId) ??
       views[0] ??
       null,
-    [sidebarVisibleViews, tableId, viewId, views, visibleViews],
+    [allVisibleViews, tableId, viewId, views, visibleViews],
   )
 
   const applyPreset = (presetId: string) => {
@@ -305,50 +594,16 @@ export function AppShell() {
 
   const handleExport = async () => {
     if (isExporting) return
-    const confirmed = await confirmAction({
-      title: '确认导出当前数据？',
-      content: '将按当前可见字段与记录导出 Excel 文件。',
-      okText: '确认导出',
-    })
-    if (!confirmed) return
-    setIsExporting(true)
-    try {
-      const records = useGridStore.getState().records
-      const formSettings = viewConfig.formSettings || {}
-      const visibleFieldIds = formSettings.visibleFieldIds
-      const fieldsToExport = visibleFieldIds ? fields.filter((f) => visibleFieldIds.includes(f.id)) : fields
-
-      const data = records.map((record) => {
-        const row: Record<string, unknown> = { ID: record.id }
-        fieldsToExport.forEach((field) => {
-          const label = formSettings.fieldConfig?.[field.id]?.label || field.name
-          row[label] = record.values[field.id]
-        })
-        return row
-      })
-
-      const ws = XLSX.utils.json_to_sheet(data)
-      const wb = XLSX.utils.book_new()
-      XLSX.utils.book_append_sheet(wb, ws, 'Records')
-      const excelBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
-      const blob = new Blob([excelBuffer], {
-        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      })
-      saveAs(blob, `export_${tableId}_${new Date().toISOString().slice(0, 10)}.xlsx`)
-    } finally {
-      window.setTimeout(() => setIsExporting(false), 180)
-    }
+    setExportScope(viewConfig.filters.length > 0 || viewConfig.sorts.length > 0 ? 'current_filters' : 'current_page')
+    setIsExportModalOpen(true)
   }
 
   const handleImportClick = async () => {
     if (isImporting) return
-    const confirmed = await confirmAction({
-      title: '确认导入记录？',
-      content: '请选择 Excel 文件继续导入。',
-      okText: '继续导入',
-    })
-    if (!confirmed) return
-    fileInputRef.current?.click()
+    setImportDialogError(null)
+    setSelectedImportFile(null)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+    setIsImportModalOpen(true)
   }
 
   const handleDeleteSelection = async () => {
@@ -382,54 +637,240 @@ export function AppShell() {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    if (file.size > MAX_IMPORT_FILE_SIZE_BYTES) {
-      setToast(`导入文件不能超过 ${Math.round(MAX_IMPORT_FILE_SIZE_BYTES / 1024 / 1024)}MB。`, 'warning')
+    const lowerFileName = file.name.toLowerCase()
+    if (!lowerFileName.endsWith('.xlsx') && !lowerFileName.endsWith('.xls') && !lowerFileName.endsWith('.csv')) {
+      setImportDialogError('仅支持导入 .xlsx、.xls 或 .csv 文件。')
       if (fileInputRef.current) fileInputRef.current.value = ''
       return
     }
-    setIsImporting(true)
-    const reader = new FileReader()
-    reader.onload = async (evt) => {
-      try {
-        const bstr = evt.target?.result
-        const wb = XLSX.read(bstr, { type: 'binary' })
-        const wsname = wb.SheetNames[0]
-        const ws = wb.Sheets[wsname]
-        const data = XLSX.utils.sheet_to_json(ws) as Record<string, unknown>[]
-        const formSettings = viewConfig.formSettings || {}
-        const mappedData = data.map((row) => {
-          const values: Record<string, unknown> = {}
-          Object.keys(row).forEach((key) => {
-            const field = fields.find((f) => {
-              const customLabel = formSettings.fieldConfig?.[f.id]?.label
-              return f.id === key || f.name === key || customLabel === key
-            })
-            if (field) values[field.id] = row[key]
-          })
-          return values
-        })
-        await importRecords(tableId, mappedData)
-      } catch (error) {
-        setToast(getApiErrorMessage(error, '导入失败，请检查文件格式。'), 'error')
-      } finally {
-        setIsImporting(false)
-        if (fileInputRef.current) fileInputRef.current.value = ''
-      }
-    }
-    reader.onerror = () => {
-      setIsImporting(false)
-      setToast('读取导入文件失败。', 'error')
+    if (file.size > MAX_IMPORT_FILE_SIZE_BYTES) {
+      setImportDialogError(`导入文件不能超过 ${Math.round(MAX_IMPORT_FILE_SIZE_BYTES / 1024 / 1024)}MB。`)
       if (fileInputRef.current) fileInputRef.current.value = ''
+      return
     }
-    reader.readAsBinaryString(file)
+    setSelectedImportFile(file)
+    setImportDialogError(null)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  const handleCloseImportModal = () => {
+    if (isImporting) return
+    setIsImportModalOpen(false)
+    setSelectedImportFile(null)
+    setImportDialogError(null)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  const handleCloseExportModal = () => {
+    if (isExporting) return
+    setIsExportModalOpen(false)
+  }
+
+  const handleSelectImportFile = () => {
+    if (isImporting) return
+    fileInputRef.current?.click()
+  }
+
+  const parseImportFile = useCallback(
+    (file: File) =>
+      new Promise<ImportRecordInput[]>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = (evt) => {
+          try {
+            const binary = evt.target?.result
+            if (typeof binary !== 'string') {
+              throw new Error('读取导入文件失败。')
+            }
+            const workbook = XLSX.read(binary, { type: 'binary', cellDates: true })
+            const sheetName = workbook.SheetNames[0]
+            if (!sheetName) {
+              throw new Error('导入文件为空或未找到可读取的工作表。')
+            }
+            const worksheet = workbook.Sheets[sheetName]
+            const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(worksheet, { defval: '' })
+            if (!Array.isArray(rows) || rows.length === 0) {
+              throw new Error('导入文件没有可导入的数据行。')
+            }
+            const formSettings = viewConfig.formSettings || {}
+            const fieldAliasMap = new Map<string, string>()
+            fields.forEach((field) => {
+              fieldAliasMap.set(field.id.trim(), field.id)
+              fieldAliasMap.set(field.name.trim(), field.id)
+              const customLabel = formSettings.fieldConfig?.[field.id]?.label?.trim()
+              if (customLabel) {
+                fieldAliasMap.set(customLabel, field.id)
+              }
+            })
+            const mappedRows = rows.map((row, index) => {
+              const values: Record<string, unknown> = {}
+              Object.entries(row).forEach(([key, cellValue]) => {
+                const fieldId = fieldAliasMap.get(key.trim())
+                if (fieldId) {
+                  const field = fields.find((item) => item.id === fieldId)
+                  if (!field) {
+                    return
+                  }
+                  try {
+                    const normalized = normalizeImportCellValue(field, cellValue, tableReferenceMembers)
+                    if (normalized !== undefined) {
+                      values[fieldId] = normalized
+                    }
+                  } catch (error) {
+                    throw new Error(`第 ${index + 2} 行：${getApiErrorMessage(error, `字段 ${field.name} 值格式错误`)}`)
+                  }
+                }
+              })
+              return {
+                rowNumber: index + 2,
+                values,
+              }
+            })
+            const validRows = mappedRows.filter((row) => Object.keys(row.values).length > 0)
+            if (validRows.length === 0) {
+              throw new Error('未匹配到可导入字段，请检查表头是否使用字段 ID、字段名或自定义显示名。')
+            }
+            resolve(validRows)
+          } catch (error) {
+            reject(error)
+          }
+        }
+        reader.onerror = () => reject(new Error('读取导入文件失败。'))
+        reader.readAsBinaryString(file)
+      }),
+    [fields, tableReferenceMembers, viewConfig.formSettings],
+  )
+
+  const handleDownloadImportTemplate = useCallback(() => {
+    const formSettings = viewConfig.formSettings || {}
+    const headers = orderedFields.map((field) => formSettings.fieldConfig?.[field.id]?.label || field.name)
+    const exampleRow = Object.fromEntries(
+      orderedFields.map((field) => [
+        formSettings.fieldConfig?.[field.id]?.label || field.name,
+        buildFieldSampleValue(field, tableReferenceMembers),
+      ]),
+    )
+    const instructionRows = orderedFields.map((field) => ({
+      列名: formSettings.fieldConfig?.[field.id]?.label || field.name,
+      字段ID: field.id,
+      字段类型: buildFieldTypeLabel(field.type),
+      示例值: buildFieldSampleValue(field, tableReferenceMembers),
+      填写说明: buildFieldImportInstruction(field),
+    }))
+    const templateSheet = XLSX.utils.json_to_sheet([exampleRow], {
+      header: headers,
+      skipHeader: false,
+    })
+    const instructionSheet = XLSX.utils.json_to_sheet(instructionRows)
+    const workbook = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(workbook, templateSheet, '导入模板')
+    XLSX.utils.book_append_sheet(workbook, instructionSheet, '填写说明')
+    const fileBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' })
+    const blob = new Blob([fileBuffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })
+    const tableName = sanitizeFileNameSegment(tableNameMap.get(tableId)?.name ?? tableId)
+    saveAs(blob, `${tableName}_import_template.xlsx`)
+  }, [orderedFields, tableId, tableNameMap, tableReferenceMembers, viewConfig.formSettings])
+
+  const fetchRecordsForExport = useCallback(
+    async (query?: RecordQueryOptions) => {
+      const items: RecordModel[] = []
+      let cursor: string | undefined
+      let totalCount = 0
+      while (true) {
+        const page = await gridApiClient.getRecords(tableId, viewId, cursor, EXPORT_FETCH_PAGE_SIZE, query)
+        items.push(...page.items)
+        totalCount = page.totalCount
+        if (!page.nextCursor) {
+          break
+        }
+        cursor = page.nextCursor
+        setToast(`正在准备导出：${items.length} / ${page.totalCount}`, 'info')
+      }
+      return { items, totalCount }
+    },
+    [setToast, tableId, viewId],
+  )
+
+  const handleConfirmImport = async () => {
+    if (isImporting) return
+    if (!selectedImportFile) {
+      setImportDialogError('请先选择需要导入的 Excel 或 CSV 文件。')
+      return
+    }
+    setIsImporting(true)
+    setImportDialogError(null)
+    try {
+      const mappedData = await parseImportFile(selectedImportFile)
+      await importRecords(tableId, mappedData)
+      setIsImportModalOpen(false)
+      setSelectedImportFile(null)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    } catch (error) {
+      setImportDialogError(getApiErrorMessage(error, '导入失败，请检查文件格式。'))
+    } finally {
+      setIsImporting(false)
+    }
+  }
+
+  const handleConfirmExport = async () => {
+    if (isExporting) return
+    setIsExporting(true)
+    try {
+      const currentViewQuery: RecordQueryOptions = {
+        filters: viewConfig.filters,
+        sorts: viewConfig.sorts,
+        filterLogic: viewConfig.filterLogic ?? 'and',
+      }
+      let recordsToExport = useGridStore.getState().records
+      let exportCount = recordsToExport.length
+      if (exportScope === 'all_records') {
+        setToast('正在准备全部数据导出，请稍候。', 'info')
+        const result = await fetchRecordsForExport()
+        recordsToExport = result.items
+        exportCount = result.totalCount
+      } else if (exportScope === 'current_filters') {
+        setToast('正在准备筛选结果导出，请稍候。', 'info')
+        const result = await fetchRecordsForExport(currentViewQuery)
+        recordsToExport = result.items
+        exportCount = result.totalCount
+      }
+      if (recordsToExport.length === 0) {
+        setToast('当前没有可导出的记录。', 'warning')
+        return
+      }
+      const formSettings = viewConfig.formSettings || {}
+      const fieldsToExport = visibleFieldsForExport.length > 0 ? visibleFieldsForExport : orderedFields
+      const data = recordsToExport.map((record) => {
+        const row: Record<string, unknown> = { ID: record.id }
+        fieldsToExport.forEach((field) => {
+          const label = formSettings.fieldConfig?.[field.id]?.label || field.name
+          row[label] = formatExportCellValue(record.values[field.id])
+        })
+        return row
+      })
+      const worksheet = XLSX.utils.json_to_sheet(data)
+      const workbook = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Records')
+      const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' })
+      const blob = new Blob([excelBuffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      })
+      const tableName = sanitizeFileNameSegment(tableNameMap.get(tableId)?.name ?? tableId)
+      const scopeName =
+        exportScope === 'all_records' ? 'all-records' : exportScope === 'current_filters' ? 'filtered-records' : 'current-page'
+      saveAs(blob, `${tableName}_${scopeName}_${new Date().toISOString().slice(0, 10)}.xlsx`)
+      setToast(`已导出 ${exportCount} 条记录。`, 'success')
+      setIsExportModalOpen(false)
+    } catch (error) {
+      setToast(getApiErrorMessage(error, '导出失败，请稍后重试。'), 'error')
+    } finally {
+      window.setTimeout(() => setIsExporting(false), 180)
+    }
   }
 
   const openConfigRoute = useCallback(
     (key: string) => {
-      if (key === 'config:integrations') {
-        navigate('/integrations')
-        return
-      }
       if (key === 'config:ai-models') {
         setToast('模型配置功能待开发，敬请期待。', 'info')
         return
@@ -454,27 +895,45 @@ export function AppShell() {
   const createViewFromAddMenu = useCallback(
     async (type: 'grid' | 'kanban' | 'form') => {
       const labelMap = {
-        grid: '数据表视图',
+        grid: '表格主视图',
         kanban: '数据看板',
         form: '表单视图',
       } as const
       const defaultNameMap = {
-        grid: '新建数据表',
+        grid: '新建表格视图',
         kanban: '新建看板',
         form: '新建表单',
       } as const
+      if (type !== 'grid' && !activePrimaryView) {
+        setToast('请先选择一个表格主视图，再创建对应的派生视图。', 'warning')
+        return
+      }
       const name = await promptForText(`新增${labelMap[type]}`, defaultNameMap[type], '请输入视图名称')
       const nextName = name?.trim()
       if (!nextName) return
-      const created = await createView(tableId, nextName, type)
+      const created = await createView(
+        tableId,
+        nextName,
+        type,
+        undefined,
+        type === 'grid'
+          ? {
+              folderId: activeFolder?.id ?? null,
+              viewRole: 'primary',
+            }
+          : {
+              sourceViewId: activePrimaryView?.id ?? null,
+              viewRole: 'derived',
+            },
+      )
       if (!created) return
       openSidebarView(created)
     },
-    [createView, openSidebarView, tableId],
+    [activeFolder?.id, activePrimaryView, createView, openSidebarView, setToast, tableId],
   )
   const addMenuItems = useMemo(
     () => [
-      { key: 'add:view:grid', label: '新增数据表视图' },
+      { key: 'add:view:grid', label: '新增表格主视图' },
       { key: 'add:view:kanban', label: '新增数据看板' },
       { key: 'add:view:gantt', label: '新增甘特图（即将上线）' },
       { key: 'add:view:calendar', label: '新增日历视图（即将上线）' },
@@ -593,12 +1052,10 @@ export function AppShell() {
       { key: 'config:views', icon: <SettingOutlined />, label: '视图配置', status: 'enabled' },
       { key: 'config:components', icon: <AppstoreOutlined />, label: '视图组件配置', status: 'enabled' },
       { key: 'config:showcase', icon: <BgColorsOutlined />, label: '组件参考', status: 'enabled' },
-      { key: 'config:workflow', icon: <RetweetOutlined />, label: '工作流配置', status: 'enabled' },
     ]
     : []
   const systemConfigItems: SidebarConfigItem[] = canViewBusinessConfig
     ? [
-      { key: 'config:integrations', icon: <ApiOutlined />, label: '接口管理', status: 'enabled' },
       { key: 'config:ai-models', icon: <ApiOutlined />, label: '模型配置', status: 'soon' },
       ...(role === 'owner' ? [{ key: 'config:members', icon: <TeamOutlined />, label: '成员管理', status: 'enabled' as const }] : []),
     ]
@@ -610,8 +1067,6 @@ export function AppShell() {
       ? 'config:components'
     : isShowcaseRoute
         ? 'config:showcase'
-        : isWorkflowRoute
-          ? 'config:workflow'
         : isAiModelsRoute
           ? 'config:ai-models'
           : isMembersRoute
@@ -647,11 +1102,13 @@ export function AppShell() {
             onToggleSidebarCollapsed={toggleSidebarCollapsed}
             onToggleSidebarGroup={toggleSidebarGroup}
             onOpenHome={() => openComingSoon('首页')}
-            sidebarVisibleViews={sidebarVisibleViews}
-            activeViewId={viewId}
-            activeTableId={tableId}
+            canCreateTable={canViewBusinessConfig}
+            isCreatingTable={isCreatingTable}
+            onCreateTable={() => void handleCreateTable()}
+            sidebarFolders={sidebarFolders}
+            activePrimaryViewId={activePrimaryView?.id ?? ''}
+            activeFolderId={activeFolder?.id ?? null}
             onOpenSidebarView={openSidebarView}
-            tableNameMap={tableNameMap}
             dataViewConfigItems={dataViewConfigItems}
             systemConfigItems={systemConfigItems}
             activeConfigKey={activeConfigKey}
@@ -677,7 +1134,7 @@ export function AppShell() {
                   {/* Page header — outside the card */}
                   <div className="grid-page-header">
                     <div className="grid-page-header-left">
-                      <h1 className="grid-page-title">{tableNameMap.get(tableId)?.name ?? '数据表'}</h1>
+                      <h1 className="grid-page-title">{activeFolder?.name ?? tableNameMap.get(tableId)?.name ?? '数据表'}</h1>
                     </div>
                     <div className="grid-page-header-right">
                       {!toolbarCollapseToMore && canImportRecords ? (
@@ -709,18 +1166,16 @@ export function AppShell() {
 
                   {/* View mode tabs — between header and card */}
                   <div className="view-mode-tabs-row">
-                    {currentTableViews.map((view) => {
+                    {activeModeViews.map((view) => {
                       const isActive = view.id === (activeView?.id ?? viewId)
-                      const icon = view.type === 'kanban' ? <ProjectOutlined /> : view.type === 'form' ? <AppstoreOutlined /> : <TableOutlined />
-                      const label = view.type === 'kanban' ? '数据看板' : view.type === 'form' ? '表单视图' : '表格数据'
                       return (
                         <button
                           key={view.id}
                           className={`view-mode-tab-item${isActive ? ' is-active' : ''}`}
                           onClick={() => openSidebarView(view)}
                         >
-                          <span className="view-mode-tab-icon">{icon}</span>
-                          <span>{view.name || label}</span>
+                          <span className="view-mode-tab-icon">{getViewModeIcon(view.type)}</span>
+                          <span>{view.name || getViewModeLabel(view.type)}</span>
                         </button>
                       )
                     })}
@@ -839,6 +1294,159 @@ export function AppShell() {
         tableReferenceMembers={tableReferenceMembers}
         onCreateRecord={createRecord}
       />
+
+      <CustomModal
+        open={isImportModalOpen}
+        title="导入记录"
+        onCancel={handleCloseImportModal}
+        onOk={() => void handleConfirmImport()}
+        okText="开始导入"
+        cancelText="取消"
+        width={680}
+        confirmLoading={isImporting}
+        cancelDisabled={isImporting}
+      >
+        <div style={{ display: 'grid', gap: 16 }}>
+          <div className="cm-text-secondary">上传 Excel 或 CSV 文件后，系统会按当前表字段批量导入记录。你也可以先下载示例模板再填写。</div>
+          <div
+            style={{
+              display: 'grid',
+              gap: 8,
+              padding: 14,
+              borderRadius: 12,
+              border: '1px solid var(--line-soft)',
+              background: 'var(--bg-elevated)',
+            }}
+          >
+            <strong>上传说明</strong>
+            <span className="cm-text-secondary">1. 仅读取第一个工作表，首行默认为表头。</span>
+            <span className="cm-text-secondary">2. 表头可使用字段 ID、字段名或自定义显示名。</span>
+            <span className="cm-text-secondary">3. 未匹配的列会被忽略，文件大小上限 {Math.round(MAX_IMPORT_FILE_SIZE_BYTES / 1024 / 1024)}MB。</span>
+          </div>
+          <div style={{ display: 'grid', gap: 10 }}>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <button type="button" className="cm-btn" onClick={handleSelectImportFile} disabled={isImporting}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <UploadOutlined />
+                  <span>{selectedImportFile ? '重新选择文件' : '选择文件'}</span>
+                </span>
+              </button>
+              <button type="button" className="cm-btn" onClick={handleDownloadImportTemplate} disabled={isImporting}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <DownloadOutlined />
+                  <span>下载示例模板</span>
+                </span>
+              </button>
+            </div>
+            <div className="cm-text-secondary">
+              {selectedImportFile ? `已选择：${selectedImportFile.name}` : '尚未选择导入文件。'}
+            </div>
+          </div>
+          {importDialogError ? (
+            <div
+              style={{
+                padding: 12,
+                borderRadius: 10,
+                border: '1px solid rgba(214, 87, 70, 0.32)',
+                background: 'rgba(214, 87, 70, 0.08)',
+                color: 'var(--danger-strong, #b42318)',
+                lineHeight: 1.5,
+              }}
+            >
+              {importDialogError}
+            </div>
+          ) : null}
+        </div>
+      </CustomModal>
+
+      <CustomModal
+        open={isExportModalOpen}
+        title="导出记录"
+        onCancel={handleCloseExportModal}
+        onOk={() => void handleConfirmExport()}
+        okText="开始导出"
+        cancelText="取消"
+        width={680}
+        confirmLoading={isExporting}
+        cancelDisabled={isExporting}
+      >
+        <div style={{ display: 'grid', gap: 16 }}>
+          <div className="cm-text-secondary">请选择导出范围。导出的列以当前视图可见字段为准。</div>
+          <label
+            style={{
+              display: 'grid',
+              gap: 4,
+              padding: 14,
+              borderRadius: 12,
+              border: exportScope === 'current_page' ? '1px solid var(--accent-strong)' : '1px solid var(--line-soft)',
+              background: 'var(--bg-elevated)',
+              cursor: 'pointer',
+            }}
+          >
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              <input
+                type="radio"
+                name="export-scope"
+                checked={exportScope === 'current_page'}
+                onChange={() => setExportScope('current_page')}
+                disabled={isExporting}
+              />
+              <strong>当前页数据</strong>
+            </span>
+            <span className="cm-text-secondary">仅导出当前分页已加载的 {pageRecordCount} 条记录。</span>
+          </label>
+          <label
+            style={{
+              display: 'grid',
+              gap: 4,
+              padding: 14,
+              borderRadius: 12,
+              border: exportScope === 'all_records' ? '1px solid var(--accent-strong)' : '1px solid var(--line-soft)',
+              background: 'var(--bg-elevated)',
+              cursor: 'pointer',
+            }}
+          >
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              <input
+                type="radio"
+                name="export-scope"
+                checked={exportScope === 'all_records'}
+                onChange={() => setExportScope('all_records')}
+                disabled={isExporting}
+              />
+              <strong>全部数据</strong>
+            </span>
+            <span className="cm-text-secondary">导出当前数据表的全部记录，忽略当前筛选条件。</span>
+          </label>
+          <label
+            style={{
+              display: 'grid',
+              gap: 4,
+              padding: 14,
+              borderRadius: 12,
+              border: exportScope === 'current_filters' ? '1px solid var(--accent-strong)' : '1px solid var(--line-soft)',
+              background: 'var(--bg-elevated)',
+              cursor: 'pointer',
+            }}
+          >
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              <input
+                type="radio"
+                name="export-scope"
+                checked={exportScope === 'current_filters'}
+                onChange={() => setExportScope('current_filters')}
+                disabled={isExporting}
+              />
+              <strong>当前筛选结果</strong>
+            </span>
+            <span className="cm-text-secondary">
+              {viewConfig.filters.length > 0 || viewConfig.sorts.length > 0
+                ? `按当前视图的筛选/排序条件导出，当前命中 ${totalRecords} 条记录。`
+                : '当前没有筛选条件，将按当前视图排序导出全部记录。'}
+            </span>
+          </label>
+        </div>
+      </CustomModal>
 
       {toast ? <div className="grid-toast">{toast}</div> : null}
     </div>

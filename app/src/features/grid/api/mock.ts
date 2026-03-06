@@ -1,5 +1,5 @@
 import { createApiClient } from './client'
-import type { Field, RecordModel, TableButtonPermissions, View, ViewConfig } from '../types/grid'
+import type { Field, RecordModel, TableButtonPermissions, TableCatalogItem, View, ViewCatalog, ViewConfig, ViewFolder } from '../types/grid'
 
 const DEFAULT_VIEW_CONFIG: ViewConfig = {
   hiddenFieldIds: [],
@@ -13,6 +13,14 @@ const DEFAULT_VIEW_CONFIG: ViewConfig = {
   filterPresets: [],
   components: {},
 }
+
+const mockTables: TableCatalogItem[] = [
+  { id: 'tbl_1', baseId: 'base_1', name: '项目任务', defaultViewId: 'viw_1', sortOrder: 0 },
+]
+
+const mockFolders = [
+  { id: 'vfd_1', tableId: 'tbl_1', name: '项目任务', sortOrder: 0, isEnabled: true },
+]
 
 const mockFields: Field[] = [
   { id: 'fld_name', tableId: 'tbl_1', name: '名称', type: 'text', width: 260 },
@@ -37,6 +45,9 @@ const mockViews: View[] = [
   {
     id: 'viw_1',
     tableId: 'tbl_1',
+    folderId: 'vfd_1',
+    sourceViewId: null,
+    viewRole: 'primary',
     name: '表格',
     type: 'grid',
     config: {
@@ -53,6 +64,9 @@ const mockViews: View[] = [
   {
     id: 'viw_kanban_1',
     tableId: 'tbl_1',
+    folderId: 'vfd_1',
+    sourceViewId: 'viw_1',
+    viewRole: 'derived',
     name: '看板',
     type: 'kanban',
     config: {
@@ -82,7 +96,90 @@ const mockRecords: RecordModel[] = Array.from({ length: 2000 }, (_, i) => {
 })
 
 const recordsById = new Map(mockRecords.map((record) => [record.id, record]))
+let dynamicTableSeq = 2
+let dynamicFolderSeq = 2
+let dynamicViewSeq = 2
 let dynamicFieldSeq = 1
+
+const getViewOrder = (view: View) => view.config.order ?? 0
+
+const sortViews = (left: View, right: View) => {
+  const orderDelta = getViewOrder(left) - getViewOrder(right)
+  if (orderDelta !== 0) return orderDelta
+  return left.name.localeCompare(right.name, 'zh-Hans-CN')
+}
+
+const ensureMockFolder = (tableId: string) => {
+  const existing = mockFolders.find((folder) => folder.tableId === tableId)
+  if (existing) return existing
+  const tableName = mockTables.find((table) => table.id === tableId)?.name ?? '默认菜单'
+  const created = {
+    id: `vfd_${mockFolders.length + 1}`,
+    tableId,
+    name: tableName,
+    sortOrder: mockFolders.filter((folder) => folder.tableId === tableId).length,
+    isEnabled: true,
+  }
+  mockFolders.push(created)
+  return created
+}
+
+const buildMockViewCatalog = (tableId: string): ViewCatalog => {
+  const tableViews = mockViews.filter((view) => view.tableId === tableId)
+  const defaultFolder = ensureMockFolder(tableId)
+  const primaryById = new Map<string, { view: View; derivedViews: View[] }>()
+
+  tableViews
+    .filter((view) => (view.viewRole ?? 'primary') !== 'derived')
+    .sort(sortViews)
+    .forEach((view) => {
+      primaryById.set(view.id, {
+        view: {
+          ...view,
+          folderId: view.folderId ?? defaultFolder.id,
+          sourceViewId: view.sourceViewId ?? null,
+          viewRole: 'primary',
+        },
+        derivedViews: [],
+      })
+    })
+
+  tableViews
+    .filter((view) => (view.viewRole ?? 'primary') === 'derived' && view.sourceViewId)
+    .sort(sortViews)
+    .forEach((view) => {
+      const owner = primaryById.get(view.sourceViewId ?? '')
+      if (!owner) return
+      owner.derivedViews.push({
+        ...view,
+        folderId: owner.view.folderId ?? defaultFolder.id,
+        sourceViewId: view.sourceViewId ?? owner.view.id,
+        viewRole: 'derived',
+      })
+    })
+
+  const folders = mockFolders
+    .filter((folder) => folder.tableId === tableId)
+    .sort((left, right) => {
+      if (left.sortOrder !== right.sortOrder) return left.sortOrder - right.sortOrder
+      return left.name.localeCompare(right.name, 'zh-Hans-CN')
+    })
+    .map((folder) => ({
+      ...folder,
+      primaryViews: [...primaryById.values()]
+        .filter((item) => (item.view.folderId ?? defaultFolder.id) === folder.id)
+        .map((item) => ({
+          view: item.view,
+          derivedViews: [...item.derivedViews].sort(sortViews),
+        })),
+    }))
+    .filter((folder) => folder.primaryViews.length > 0)
+
+  return {
+    tableId,
+    folders,
+  }
+}
 const mockReferenceMembers = [
   { userId: 'usr_owner', username: 'owner' },
   { userId: 'usr_member_1', username: '张明' },
@@ -237,14 +334,236 @@ const applySorts = (records: RecordModel[], sorts: Array<{ fieldId: string; dire
 }
 
 export const mockGridApi = createApiClient({
+  async getTables(baseId) {
+    return delay(
+      mockTables
+        .filter((table) => table.baseId === baseId)
+        .sort((left, right) => (left.sortOrder ?? 0) - (right.sortOrder ?? 0) || left.name.localeCompare(right.name, 'zh-Hans-CN')),
+    )
+  },
+  async createTable(baseId, name) {
+    const trimmedName = name.trim()
+    if (!trimmedName) {
+      throw new Error('数据表名称不能为空')
+    }
+    if (mockTables.some((table) => table.baseId === baseId && table.name === trimmedName)) {
+      throw new Error('同一数据集下已存在同名数据表')
+    }
+    const tableId = `tbl_${dynamicTableSeq++}`
+    const folderId = `vfd_${dynamicFolderSeq++}`
+    const fieldId = `fld_${dynamicFieldSeq++}`
+    const viewId = `viw_${dynamicViewSeq++}`
+    mockTables.push({
+      id: tableId,
+      baseId,
+      name: trimmedName,
+      defaultViewId: viewId,
+      sortOrder: mockTables.filter((table) => table.baseId === baseId).length,
+    })
+    mockFolders.push({
+      id: folderId,
+      tableId,
+      name: trimmedName,
+      sortOrder: mockFolders.filter((folder) => folder.tableId === tableId).length,
+      isEnabled: true,
+    })
+    mockFields.push({
+      id: fieldId,
+      tableId,
+      name: '名称',
+      type: 'text',
+      width: 260,
+    })
+    mockViews.push({
+      id: viewId,
+      tableId,
+      folderId,
+      sourceViewId: null,
+      viewRole: 'primary',
+      name: '表格',
+      type: 'grid',
+      config: {
+        ...DEFAULT_VIEW_CONFIG,
+        fieldOrderIds: [fieldId],
+        columnWidths: {
+          [fieldId]: 260,
+        },
+      },
+    })
+    viewPermissionMap[viewId] = [...mockTablePermissions]
+    return delay({
+      id: tableId,
+      baseId,
+      name: trimmedName,
+      defaultViewId: viewId,
+      sortOrder: mockTables.find((table) => table.id === tableId)?.sortOrder ?? 0,
+    })
+  },
+  async updateTable(tableId, patch) {
+    const index = mockTables.findIndex((table) => table.id === tableId)
+    if (index < 0) {
+      throw new Error('数据表不存在')
+    }
+    const existing = mockTables[index]
+    const nextName = patch.name?.trim()
+    if (patch.name !== undefined) {
+      if (!nextName) {
+        throw new Error('数据表名称不能为空')
+      }
+      if (mockTables.some((table) => table.baseId === existing.baseId && table.id !== tableId && table.name === nextName)) {
+        throw new Error('同一数据集下已存在同名数据表')
+      }
+      mockTables[index] = {
+        ...existing,
+        name: nextName,
+      }
+    }
+    return delay(mockTables[index])
+  },
+  async deleteTable(tableId) {
+    const tableIndex = mockTables.findIndex((table) => table.id === tableId)
+    if (tableIndex < 0) {
+      throw new Error('数据表不存在')
+    }
+    const deletedTable = mockTables[tableIndex]
+    mockTables.splice(tableIndex, 1)
+    mockTables
+      .filter((table) => table.baseId === deletedTable.baseId)
+      .sort((left, right) => (left.sortOrder ?? 0) - (right.sortOrder ?? 0))
+      .forEach((table, index) => {
+        table.sortOrder = index
+      })
+    for (let index = mockFolders.length - 1; index >= 0; index -= 1) {
+      if (mockFolders[index].tableId === tableId) {
+        mockFolders.splice(index, 1)
+      }
+    }
+    for (let index = mockFields.length - 1; index >= 0; index -= 1) {
+      if (mockFields[index].tableId === tableId) {
+        mockFields.splice(index, 1)
+      }
+    }
+    for (let index = mockViews.length - 1; index >= 0; index -= 1) {
+      if (mockViews[index].tableId === tableId) {
+        delete viewPermissionMap[mockViews[index].id]
+        mockViews.splice(index, 1)
+      }
+    }
+    for (const [recordId, record] of recordsById.entries()) {
+      if (record.tableId === tableId) {
+        recordsById.delete(recordId)
+      }
+    }
+    for (let index = mockRecords.length - 1; index >= 0; index -= 1) {
+      if (mockRecords[index].tableId === tableId) {
+        mockRecords.splice(index, 1)
+      }
+    }
+    return delay(undefined)
+  },
+  async reorderTables(baseId, orderedIds) {
+    const baseTables = mockTables
+      .filter((table) => table.baseId === baseId)
+      .sort((left, right) => (left.sortOrder ?? 0) - (right.sortOrder ?? 0) || left.name.localeCompare(right.name, 'zh-Hans-CN'))
+    const lookup = new Map(baseTables.map((table) => [table.id, table]))
+    const nextIds = [...orderedIds.filter((id) => lookup.has(id)), ...baseTables.map((table) => table.id).filter((id) => !orderedIds.includes(id))]
+    nextIds.forEach((tableId, index) => {
+      const table = lookup.get(tableId)
+      if (table) {
+        table.sortOrder = index
+      }
+    })
+    return delay(
+      mockTables
+        .filter((table) => table.baseId === baseId)
+        .sort((left, right) => (left.sortOrder ?? 0) - (right.sortOrder ?? 0) || left.name.localeCompare(right.name, 'zh-Hans-CN')),
+    )
+  },
   async getFields(tableId) {
     return delay(mockFields.filter((field) => field.tableId === tableId))
   },
   async getViews(tableId) {
     return delay(mockViews.filter((view) => view.tableId === tableId))
   },
+  async getViewCatalog(tableId) {
+    return delay(buildMockViewCatalog(tableId))
+  },
+  async createViewFolder(tableId, name) {
+    const created: ViewFolder = {
+      id: `vfd_${mockFolders.length + 1}`,
+      tableId,
+      name,
+      sortOrder: mockFolders.filter((folder) => folder.tableId === tableId).length,
+      isEnabled: true,
+    }
+    mockFolders.push(created)
+    return delay(created)
+  },
+  async updateViewFolder(folderId, patch) {
+    const target = mockFolders.find((folder) => folder.id === folderId)
+    if (!target) {
+      throw new Error('菜单不存在')
+    }
+    if (patch.name !== undefined) target.name = patch.name
+    if (patch.isEnabled !== undefined) target.isEnabled = patch.isEnabled
+    return delay({ ...target })
+  },
+  async reorderViewFolders(tableId, orderedIds) {
+    const tableFolders = mockFolders
+      .filter((folder) => folder.tableId === tableId)
+      .sort((left, right) => left.sortOrder - right.sortOrder)
+    const orderMap = new Map(tableFolders.map((folder) => [folder.id, folder]))
+    const nextIds = [
+      ...orderedIds.filter((id) => orderMap.has(id)),
+      ...tableFolders.map((folder) => folder.id).filter((id) => !orderedIds.includes(id)),
+    ]
+    nextIds.forEach((id, index) => {
+      const target = orderMap.get(id)
+      if (target) target.sortOrder = index
+    })
+    return delay(
+      mockFolders
+        .filter((folder) => folder.tableId === tableId)
+        .sort((left, right) => left.sortOrder - right.sortOrder)
+        .map((folder) => ({ ...folder })),
+    )
+  },
+  async deleteViewFolder(folderId) {
+    const index = mockFolders.findIndex((folder) => folder.id === folderId)
+    if (index < 0) {
+      throw new Error('菜单不存在')
+    }
+    const target = mockFolders[index]
+    const sibling = mockFolders.find((folder) => folder.tableId === target.tableId && folder.id !== target.id)
+    const primaryViews = mockViews.filter((view) => view.folderId === target.id && (view.viewRole ?? 'primary') === 'primary')
+    if (primaryViews.length > 0 && !sibling) {
+      throw new Error('当前菜单下仍有主视图，请先创建其他菜单后再删除')
+    }
+    if (sibling) {
+      primaryViews.forEach((view) => {
+        view.folderId = sibling.id
+        mockViews
+          .filter((item) => item.sourceViewId === view.id)
+          .forEach((derivedView) => {
+            derivedView.folderId = sibling.id
+          })
+      })
+    }
+    mockFolders.splice(index, 1)
+    mockFolders
+      .filter((folder) => folder.tableId === target.tableId)
+      .sort((left, right) => left.sortOrder - right.sortOrder)
+      .forEach((folder, nextIndex) => {
+        folder.sortOrder = nextIndex
+      })
+    return delay(undefined)
+  },
   async importViewBundle(tableId, payload) {
     const viewId = `viw_${mockViews.length + 1}`
+    const defaultFolder = ensureMockFolder(tableId)
+    const targetFolder = payload.folderId
+      ? mockFolders.find((folder) => folder.id === payload.folderId && folder.tableId === tableId) ?? defaultFolder
+      : defaultFolder
     const sameTableViews = mockViews.filter((view) => view.tableId === tableId)
     const nextOrder =
       sameTableViews.length === 0
@@ -253,6 +572,9 @@ export const mockGridApi = createApiClient({
     const createdView: View = {
       id: viewId,
       tableId,
+      folderId: targetFolder.id,
+      sourceViewId: null,
+      viewRole: 'primary',
       name: payload.viewName,
       type: payload.viewType ?? 'grid',
       config: { ...DEFAULT_VIEW_CONFIG, order: nextOrder },
@@ -392,16 +714,27 @@ export const mockGridApi = createApiClient({
     }
     return delay(undefined)
   },
-  async createView(tableId, name, type) {
+  async createView(tableId, name, type, options) {
     const id = `viw_${mockViews.length + 1}`
+    const defaultFolder = ensureMockFolder(tableId)
     const sameTableViews = mockViews.filter((view) => view.tableId === tableId)
     const nextOrder =
       sameTableViews.length === 0
         ? 0
         : Math.max(...sameTableViews.map((view) => view.config.order ?? 0)) + 1
+    const sourceView = options?.sourceViewId
+      ? mockViews.find((view) => view.id === options.sourceViewId && view.tableId === tableId)
+      : null
+    const isDerived = (options?.viewRole ?? (type === 'grid' ? 'primary' : 'derived')) === 'derived'
+    const resolvedFolderId = isDerived
+      ? sourceView?.folderId ?? defaultFolder.id
+      : options?.folderId ?? defaultFolder.id
     const created: View = {
       id,
       tableId,
+      folderId: resolvedFolderId,
+      sourceViewId: isDerived ? sourceView?.id ?? options?.sourceViewId ?? null : null,
+      viewRole: isDerived ? 'derived' : 'primary',
       name,
       type,
       config: { ...DEFAULT_VIEW_CONFIG, order: nextOrder },
@@ -433,6 +766,9 @@ export const mockGridApi = createApiClient({
       ...existing,
       ...(patch.name !== undefined ? { name: patch.name } : {}),
       ...(patch.type !== undefined ? { type: patch.type } : {}),
+      ...(patch.folderId !== undefined ? { folderId: patch.folderId } : {}),
+      ...(patch.sourceViewId !== undefined ? { sourceViewId: patch.sourceViewId } : {}),
+      ...(patch.viewRole !== undefined ? { viewRole: patch.viewRole } : {}),
       ...(patch.config !== undefined ? { config: patch.config } : {}),
     }
     const index = mockViews.findIndex((view) => view.id === viewId)
@@ -523,27 +859,7 @@ export const mockGridApi = createApiClient({
       statusOptions: [...(mockFields.find((item) => item.id === mockWorkflowConfig.statusFieldId)?.options ?? [])],
     })
   },
-  async updateWorkflowConfig(tableId, payload) {
-    const statusField = mockFields.find((item) => item.id === payload.statusFieldId)
-    mockWorkflowConfig = {
-      tableId,
-      statusFieldId: payload.statusFieldId,
-      allowAnyTransition: payload.allowAnyTransition,
-      finalStatusOptionIds: [...payload.finalStatusOptionIds],
-      statusOptions: statusField?.options ?? [],
-    }
-    return delay({
-      ...mockWorkflowConfig,
-      statusOptions: [...mockWorkflowConfig.statusOptions],
-    })
-  },
   async getWorkflowTransitions(_tableId) {
-    return delay([...mockWorkflowTransitions])
-  },
-  async updateWorkflowTransitions(_tableId, payload) {
-    mockWorkflowTransitions = payload.flatMap((item) =>
-      item.toOptionIds.map((toOptionId) => ({ fromOptionId: item.fromOptionId, toOptionId })),
-    )
     return delay([...mockWorkflowTransitions])
   },
   async transitionRecordStatus(recordId, payload) {
@@ -589,6 +905,17 @@ export const mockGridApi = createApiClient({
   },
   async getViewTabs(viewId) {
     return delay((mockViewTabs[viewId] ?? []).map((item) => ({ ...item })))
+  },
+  async batchTabCounts(tableId, _viewId, tabs) {
+    const base = mockRecords.filter((record) => record.tableId === tableId)
+    const result: Record<string, number> = {}
+    for (const tab of tabs) {
+      const payload = tab.payload ?? { filterLogic: 'and', filters: [], sorts: [] }
+      const filters = Array.isArray(payload.filters) ? payload.filters : []
+      const filterLogic = payload.filterLogic === 'or' ? 'or' : 'and'
+      result[tab.tabId] = filters.length === 0 ? base.length : applyFilters(base, filters, filterLogic).length
+    }
+    return delay(result, 120)
   },
   async createViewTab(viewId, payload) {
     const view = mockViews.find((item) => item.id === viewId)

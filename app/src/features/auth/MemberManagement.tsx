@@ -435,7 +435,7 @@ export function MemberManagement() {
         okText="确认新增"
         cancelText="取消"
         confirmLoading={createLoading}
-        destroyOnClose={false}
+        destroyOnHidden={false}
         styles={{ body: { paddingTop: 8 } }}
       >
         <Form layout="vertical" form={createForm}>

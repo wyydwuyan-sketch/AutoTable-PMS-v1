@@ -6,12 +6,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .db import ensure_schema_upgrades, get_db
-from .integrations_scheduler import init_scheduler, shutdown_scheduler
 from .routes import (
     auth_router,
     grid_resources_router,
     health_router,
-    integrations_router,
     permissions_router,
     tenants_router,
     workflow_router,
@@ -43,7 +41,6 @@ app.include_router(tenants_router)
 app.include_router(permissions_router)
 app.include_router(grid_resources_router)
 app.include_router(workflow_router)
-app.include_router(integrations_router)
 
 
 @app.on_event("startup")
@@ -52,11 +49,5 @@ def startup() -> None:
     ensure_schema_upgrades()
     for db in get_db():
         ensure_seed_data(db)
-    init_scheduler()
-
-
-@app.on_event("shutdown")
-def shutdown() -> None:
-    shutdown_scheduler()
 
 

@@ -20,6 +20,17 @@ export interface GridFilter {
   keyword: string
 }
 
+export interface ImportRecordInput {
+  values: Record<string, unknown>
+  rowNumber: number
+}
+
+export interface ImportRecordsResult {
+  successCount: number
+  failedCount: number
+  failureMessages: string[]
+}
+
 interface GridState {
   activeTableId: string | null
   activeViewId: string | null
@@ -73,8 +84,18 @@ interface GridState {
   moveFieldInView: (viewId: string, fieldId: string, direction: 'up' | 'down') => Promise<View | null>
   setFieldOrderInView: (viewId: string, fieldOrderIds: string[]) => Promise<View | null>
   deleteField: (fieldId: string) => Promise<void>
-  importRecords: (tableId: string, records: Record<string, unknown>[]) => Promise<void>
-  createView: (tableId: string, name: string, type: 'grid' | 'form' | 'kanban') => Promise<View | null>
+  importRecords: (tableId: string, records: ImportRecordInput[]) => Promise<ImportRecordsResult>
+  createView: (
+    tableId: string,
+    name: string,
+    type: 'grid' | 'form' | 'kanban',
+    initialConfig?: Partial<ViewConfig>,
+    options?: {
+      folderId?: string | null
+      sourceViewId?: string | null
+      viewRole?: 'primary' | 'derived'
+    },
+  ) => Promise<View | null>
   deleteView: (viewId: string) => Promise<string | null>
   setViewEnabled: (viewId: string, enabled: boolean) => Promise<View | null>
   renameView: (viewId: string, name: string) => Promise<View | null>
@@ -97,6 +118,7 @@ const OPERATION_LOG_EVENT = 'grid_operation_logs_updated'
 const MAX_CLIENT_RECORDS = 500
 const IMPORT_BATCH_SIZE = 100
 const IMPORT_CONCURRENCY = 8
+const MAX_IMPORT_FAILURE_DETAILS = 3
 
 const defaultTableButtonPermissions: TableButtonPermissions = {
   canCreateRecord: true,
@@ -131,6 +153,18 @@ const getErrorMessage = (error: unknown, fallback: string) => {
     return error.message
   }
   return fallback
+}
+
+const dedupeMessages = (messages: string[]) => Array.from(new Set(messages))
+
+const formatImportFailureSummary = (messages: string[], failedCount: number) => {
+  const uniqueMessages = dedupeMessages(messages)
+  const sample = uniqueMessages.slice(0, MAX_IMPORT_FAILURE_DETAILS)
+  if (sample.length === 0) {
+    return failedCount > 0 ? `共 ${failedCount} 条导入失败，请检查数据格式。` : '导入失败，请检查数据格式。'
+  }
+  const remaining = Math.max(0, failedCount - sample.length)
+  return remaining > 0 ? `${sample.join('；')}；另有 ${remaining} 条失败` : sample.join('；')
 }
 
 const normalizeValueForCompare = (value: unknown): unknown => {
@@ -883,22 +917,27 @@ export const useGridStore = create<GridState>((set, get) => {
   importRecords: async (tableId, recordValuesList) => {
     try {
       if (recordValuesList.length === 0) {
-        set({ toast: '没有可导入的数据。' })
-        window.setTimeout(() => set({ toast: null }), 1500)
-        return
+        throw new Error('没有可导入的数据。')
       }
       let successCount = 0
       let failedCount = 0
+      const failureMessages: string[] = []
       const total = recordValuesList.length
 
       for (let offset = 0; offset < total; offset += IMPORT_BATCH_SIZE) {
         const batch = recordValuesList.slice(offset, offset + IMPORT_BATCH_SIZE)
         const settled = await runWithConcurrency(batch, IMPORT_CONCURRENCY, (values) =>
-          gridApiClient.createRecord(tableId, values),
+          gridApiClient.createRecord(tableId, values.values),
         )
-        const createdRecords = settled
-          .filter((item): item is PromiseFulfilledResult<RecordModel> => item.status === 'fulfilled')
-          .map((item) => item.value)
+        const createdRecords: RecordModel[] = []
+        settled.forEach((item, index) => {
+          if (item.status === 'fulfilled') {
+            createdRecords.push(item.value)
+            return
+          }
+          const rowNumber = batch[index]?.rowNumber ?? offset + index + 2
+          failureMessages.push(`第 ${rowNumber} 行：${getErrorMessage(item.reason, '导入失败。')}`)
+        })
         const currentFailed = settled.length - createdRecords.length
         successCount += createdRecords.length
         failedCount += currentFailed
@@ -925,13 +964,14 @@ export const useGridStore = create<GridState>((set, get) => {
         })
       }
 
+      const uniqueFailureMessages = dedupeMessages(failureMessages)
       if (successCount === 0) {
-        throw new Error('导入失败，未创建任何记录。')
+        throw new Error(formatImportFailureSummary(uniqueFailureMessages, failedCount))
       }
       set({
         toast:
           failedCount > 0
-            ? `导入完成：成功 ${successCount} 条，失败 ${failedCount} 条。`
+            ? `导入完成：成功 ${successCount} 条，失败 ${failedCount} 条。${formatImportFailureSummary(uniqueFailureMessages, failedCount)}`
             : `已成功导入 ${successCount} 条记录。`,
       })
       appendOperationLog({
@@ -944,17 +984,38 @@ export const useGridStore = create<GridState>((set, get) => {
         count: successCount,
       })
       window.setTimeout(() => set({ toast: null }), 2000)
+      return {
+        successCount,
+        failedCount,
+        failureMessages: uniqueFailureMessages,
+      }
     } catch (error) {
-      set({ toast: getErrorMessage(error, '导入记录失败。') })
-      window.setTimeout(() => set({ toast: null }), 1800)
+      const message = getErrorMessage(error, '导入记录失败。')
+      set({ toast: message })
+      window.setTimeout(() => set({ toast: null }), 2400)
+      throw error instanceof Error ? error : new Error(message)
     }
   },
-  createView: async (tableId, name, type) => {
+  createView: async (tableId, name, type, initialConfig, options) => {
     try {
-      const created = await gridApiClient.createView(tableId, name, type)
+      let created = await gridApiClient.createView(tableId, name, type, options)
+      if (initialConfig) {
+        created = await gridApiClient.updateView(created.id, {
+          config: {
+            ...created.config,
+            ...initialConfig,
+            formSettings: initialConfig.formSettings
+              ? {
+                  ...(created.config.formSettings ?? {}),
+                  ...initialConfig.formSettings,
+                }
+              : created.config.formSettings,
+          },
+        })
+      }
       set((state) => {
         // Initialize form view with all fields visible by default
-        if (type === 'form') {
+        if (type === 'form' && !initialConfig?.formSettings) {
           created.config = {
             ...created.config,
             formSettings: {

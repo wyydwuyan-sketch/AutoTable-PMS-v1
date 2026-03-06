@@ -26,8 +26,8 @@ export function CustomDrawer({
             onClose={onClose}
             width={width}
             footer={footer}
-            destroyOnClose={false}
-            maskClosable
+            destroyOnHidden={false}
+            mask={{ closable: true }}
             keyboard
         >
             {children}

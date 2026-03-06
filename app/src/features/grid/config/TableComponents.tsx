@@ -8,9 +8,9 @@ import { useGridStore } from '../store/gridStore'
 import type { Field, FieldComponentConfig, FieldComponentType, FieldOption, FieldType, ReferenceMember, View, ViewConfig } from '../types/grid'
 import { gridApiClient } from '../api'
 import { confirmAction } from '../../../utils/confirmAction'
-import { tableItems } from '../../../config/tables'
 import { useMultiTableFields } from '../../../app/hooks/useMultiTableFields'
 import { useMultiTableViews } from '../../../app/hooks/useMultiTableViews'
+import { useTableCatalog } from '../../../app/hooks/useTableCatalog'
 import { ViewSetupWizard } from './ViewSetupWizard'
 import { buildShowcaseModels, DisplayPreview, EditorPreview } from './FieldComponentPreview'
 import './ComponentShowcase.css'
@@ -153,7 +153,8 @@ const toOrderedFields = (fields: Field[], fieldOrderIds?: string[]): Field[] => 
 type FieldListFilter = 'all' | 'configured' | 'removed' | 'visible'
 
 export function TableComponents() {
-  const { tableId = 'tbl_1', viewId = 'viw_1' } = useParams()
+  const { baseId = 'base_1', tableId = '', viewId = '' } = useParams()
+  const { tables: tableItems, isLoading: tableCatalogLoading } = useTableCatalog(baseId)
   const [searchParams, setSearchParams] = useSearchParams()
   const storeFields = useGridStore((state) => state.fields)
   const storeViews = useGridStore((state) => state.views)
@@ -412,6 +413,17 @@ export function TableComponents() {
     newFieldName.trim().length > 0 ||
     newFieldType !== 'text' ||
     newFieldOptions.trim().length > 0
+
+  useEffect(() => {
+    if (tableItems.length === 0) return
+    const fallbackTableId = tableItems.some((item) => item.id === tableId) ? tableId : tableItems[0].id
+    if (!tableItems.some((item) => item.id === editingTableId)) {
+      setEditingTableId(fallbackTableId)
+    }
+    if (!tableItems.some((item) => item.id === newFieldTargetTableId)) {
+      setNewFieldTargetTableId(fallbackTableId)
+    }
+  }, [editingTableId, newFieldTargetTableId, tableId, tableItems])
 
   const parentCandidates = useMemo(
     () => fields.filter((field) => field.id !== editingFieldId && field.type === 'singleSelect'),
@@ -942,7 +954,9 @@ export function TableComponents() {
       <div className="tc-header">
         <h3 className="tc-title">业务配置 / 表格组件</h3>
         <p className="tc-subtitle">
-          当前视图: {currentViewId ?? '-'}。已加载 {tableItems.length} 个数据表、{multiTableAllFields.length} 个字段，可按表分组统一配置。
+          {tableCatalogLoading
+            ? '正在加载数据表目录...'
+            : `当前视图: ${currentViewId ?? '-'}。已加载 ${tableItems.length} 个数据表、${multiTableAllFields.length} 个字段，可按表分组统一配置。`}
         </p>
       </div>
 

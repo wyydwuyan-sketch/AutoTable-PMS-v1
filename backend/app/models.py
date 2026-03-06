@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
+
+
+def utc_now_naive() -> datetime:
+    # Keep SQLite timestamps naive while sourcing them from an explicit UTC clock.
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class BaseModel(Base):
@@ -20,6 +25,22 @@ class BaseModel(Base):
     tables: Mapped[list["TableModel"]] = relationship(back_populates="base", cascade="all, delete-orphan")
 
 
+class ViewFolderModel(Base):
+    __tablename__ = "view_folders"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
+    table_id: Mapped[str] = mapped_column(ForeignKey("tables.id"), index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now_naive)
+
+    tenant: Mapped["TenantModel"] = relationship(back_populates="view_folders")
+    table: Mapped["TableModel"] = relationship(back_populates="view_folders")
+    views: Mapped[list["ViewModel"]] = relationship(back_populates="folder")
+
+
 class TableModel(Base):
     __tablename__ = "tables"
 
@@ -27,9 +48,11 @@ class TableModel(Base):
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
     base_id: Mapped[str] = mapped_column(ForeignKey("bases.id"), index=True, nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     tenant: Mapped["TenantModel"] = relationship(back_populates="tables")
     base: Mapped[BaseModel] = relationship(back_populates="tables")
+    view_folders: Mapped[list[ViewFolderModel]] = relationship(back_populates="table", cascade="all, delete-orphan")
     views: Mapped[list["ViewModel"]] = relationship(back_populates="table", cascade="all, delete-orphan")
     fields: Mapped[list["FieldModel"]] = relationship(back_populates="table", cascade="all, delete-orphan")
     records: Mapped[list["RecordModel"]] = relationship(back_populates="table", cascade="all, delete-orphan")
@@ -63,12 +86,27 @@ class ViewModel(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
     table_id: Mapped[str] = mapped_column(ForeignKey("tables.id"), index=True, nullable=False)
+    folder_id: Mapped[str | None] = mapped_column(ForeignKey("view_folders.id"), index=True, nullable=True)
+    source_view_id: Mapped[str | None] = mapped_column(ForeignKey("views.id"), index=True, nullable=True)
+    view_role: Mapped[str] = mapped_column(String(32), nullable=False, default="primary")
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     type: Mapped[str] = mapped_column(String(32), nullable=False, default="grid")
     config_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
 
     tenant: Mapped["TenantModel"] = relationship(back_populates="views")
     table: Mapped[TableModel] = relationship(back_populates="views")
+    folder: Mapped[ViewFolderModel | None] = relationship(back_populates="views")
+    source_view: Mapped["ViewModel | None"] = relationship(
+        "ViewModel",
+        back_populates="derived_views",
+        remote_side=lambda: [ViewModel.id],
+        foreign_keys=lambda: [ViewModel.source_view_id],
+    )
+    derived_views: Mapped[list["ViewModel"]] = relationship(
+        "ViewModel",
+        back_populates="source_view",
+        foreign_keys=lambda: [ViewModel.source_view_id],
+    )
     permissions: Mapped[list["ViewPermissionModel"]] = relationship(back_populates="view", cascade="all, delete-orphan")
     tabs: Mapped[list["ViewTabModel"]] = relationship(back_populates="view", cascade="all, delete-orphan")
 
@@ -96,8 +134,8 @@ class RecordModel(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
     table_id: Mapped[str] = mapped_column(ForeignKey("tables.id"), index=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now_naive)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     tenant: Mapped["TenantModel"] = relationship(back_populates="records")
@@ -126,6 +164,7 @@ class TenantModel(Base):
 
     bases: Mapped[list[BaseModel]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
     tables: Mapped[list[TableModel]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
+    view_folders: Mapped[list[ViewFolderModel]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
     views: Mapped[list[ViewModel]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
     fields: Mapped[list[FieldModel]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
     records: Mapped[list[RecordModel]] = relationship(back_populates="tenant", cascade="all, delete-orphan")
@@ -154,7 +193,7 @@ class TenantRoleModel(Base):
     can_manage_permissions: Mapped[bool] = mapped_column(nullable=False, default=False)
     default_table_can_read: Mapped[bool] = mapped_column(nullable=False, default=True)
     default_table_can_write: Mapped[bool] = mapped_column(nullable=False, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now_naive)
 
     tenant: Mapped[TenantModel] = relationship(back_populates="roles")
 
@@ -170,7 +209,7 @@ class UserModel(Base):
     mobile: Mapped[str | None] = mapped_column(String(64), nullable=True)
     must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     default_tenant_id: Mapped[str | None] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now_naive)
 
     default_tenant: Mapped[TenantModel | None] = relationship(back_populates="users_with_default")
     memberships: Mapped[list["MembershipModel"]] = relationship(back_populates="user", cascade="all, delete-orphan")
@@ -187,7 +226,7 @@ class MembershipModel(Base):
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True, nullable=False)
     role: Mapped[str] = mapped_column(String(32), nullable=False, default="member")
     role_key: Mapped[str] = mapped_column(String(64), nullable=False, default="member")
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now_naive)
 
     user: Mapped[UserModel] = relationship(back_populates="memberships")
     tenant: Mapped[TenantModel] = relationship(back_populates="memberships")
@@ -211,7 +250,7 @@ class TablePermissionModel(Base):
     can_export_records: Mapped[bool] = mapped_column(nullable=False, default=True)
     can_manage_filters: Mapped[bool] = mapped_column(nullable=False, default=True)
     can_manage_sorts: Mapped[bool] = mapped_column(nullable=False, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now_naive)
 
     tenant: Mapped[TenantModel] = relationship(back_populates="table_permissions")
     table: Mapped[TableModel] = relationship(back_populates="permissions")
@@ -230,7 +269,7 @@ class ViewPermissionModel(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
     can_read: Mapped[bool] = mapped_column(nullable=False, default=True)
     can_write: Mapped[bool] = mapped_column(nullable=False, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now_naive)
 
     tenant: Mapped[TenantModel] = relationship(back_populates="view_permissions")
     view: Mapped[ViewModel] = relationship(back_populates="permissions")
@@ -249,8 +288,8 @@ class TableWorkflowConfigModel(Base):
     status_field_id: Mapped[str | None] = mapped_column(ForeignKey("fields.id"), index=True, nullable=True)
     allow_any_transition: Mapped[bool] = mapped_column(nullable=False, default=True)
     final_status_option_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now_naive)
 
     tenant: Mapped[TenantModel] = relationship(back_populates="workflow_configs")
     table: Mapped[TableModel] = relationship(back_populates="workflow_config")
@@ -274,7 +313,7 @@ class WorkflowTransitionModel(Base):
     table_id: Mapped[str] = mapped_column(ForeignKey("tables.id"), index=True, nullable=False)
     from_option_id: Mapped[str] = mapped_column(String(128), nullable=False)
     to_option_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now_naive)
 
     tenant: Mapped[TenantModel] = relationship(back_populates="workflow_transitions")
     table: Mapped[TableModel] = relationship(back_populates="workflow_transitions")
@@ -292,7 +331,7 @@ class RecordStatusLogModel(Base):
     to_option_id: Mapped[str] = mapped_column(String(128), nullable=False)
     operator_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), index=True, nullable=True)
     source: Mapped[str] = mapped_column(String(32), nullable=False, default="api")
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now_naive)
 
     tenant: Mapped[TenantModel] = relationship(back_populates="record_status_logs")
     table: Mapped[TableModel] = relationship(back_populates="status_logs")
@@ -314,7 +353,7 @@ class ViewTabModel(Base):
     is_system_preset: Mapped[bool] = mapped_column(nullable=False, default=False)
     filter_payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now_naive)
 
     tenant: Mapped[TenantModel] = relationship(back_populates="view_tabs")
     view: Mapped[ViewModel] = relationship(back_populates="tabs")
@@ -330,7 +369,7 @@ class CredentialModel(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     auth_type: Mapped[str] = mapped_column(String(32), nullable=False)
     secret_encrypted: Mapped[str] = mapped_column(String(2048), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now_naive)
 
     tenant: Mapped[TenantModel] = relationship(back_populates="credentials")
     connectors: Mapped[list["ApiConnectorModel"]] = relationship(back_populates="credential")
@@ -353,8 +392,8 @@ class ApiConnectorModel(Base):
     request_headers_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     response_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now_naive)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now_naive)
 
     tenant: Mapped[TenantModel] = relationship(back_populates="api_connectors")
     table: Mapped[TableModel] = relationship(back_populates="api_connectors")
@@ -408,7 +447,7 @@ class ExecutionLogModel(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     connector_id: Mapped[str] = mapped_column(ForeignKey("api_connectors.id"), index=True, nullable=False)
-    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now_naive)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
     rows_written: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -430,4 +469,4 @@ class AuditLogModel(Base):
     resource_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     path: Mapped[str | None] = mapped_column(String(255), nullable=True)
     detail: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=utc_now_naive)

@@ -5,8 +5,11 @@ import type {
   FilterCondition,
   FilterLogic,
   RecordModel,
+  TableCatalogItem,
   TableButtonPermissions,
   View,
+  ViewCatalog,
+  ViewFolder,
 } from '../types/grid'
 import { createDefaultViewConfig } from '../utils/viewConfig'
 import { requestJsonWithAuthStore as requestJson } from '../../../utils/request'
@@ -40,11 +43,61 @@ const buildKanbanQuery = (query?: {
 }
 
 export const httpGridApi = createApiClient({
+  async getTables(baseId) {
+    return requestJson<TableCatalogItem[]>(`/bases/${baseId}/tables`)
+  },
+  async createTable(baseId, name) {
+    return requestJson<TableCatalogItem>(`/bases/${baseId}/tables`, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    })
+  },
+  async updateTable(tableId, patch) {
+    return requestJson<TableCatalogItem>(`/tables/${tableId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    })
+  },
+  async deleteTable(tableId) {
+    await requestJson<void>(`/tables/${tableId}`, {
+      method: 'DELETE',
+    })
+  },
+  async reorderTables(baseId, orderedIds) {
+    return requestJson<TableCatalogItem[]>(`/bases/${baseId}/tables/reorder`, {
+      method: 'PUT',
+      body: JSON.stringify({ orderedIds }),
+    })
+  },
   async getFields(tableId) {
     return requestJson<Field[]>(`/tables/${tableId}/fields`)
   },
   async getViews(tableId) {
     return requestJson<View[]>(`/tables/${tableId}/views`)
+  },
+  async getViewCatalog(tableId) {
+    return requestJson<ViewCatalog>(`/tables/${tableId}/view-catalog`)
+  },
+  async createViewFolder(tableId, name) {
+    return requestJson<ViewFolder>(`/tables/${tableId}/view-folders`, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    })
+  },
+  async updateViewFolder(folderId, patch) {
+    return requestJson<ViewFolder>(`/view-folders/${folderId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    })
+  },
+  async reorderViewFolders(tableId, orderedIds) {
+    return requestJson<ViewFolder[]>(`/tables/${tableId}/view-folders/reorder`, {
+      method: 'PUT',
+      body: JSON.stringify({ orderedIds }),
+    })
+  },
+  async deleteViewFolder(folderId) {
+    await requestJson<void>(`/view-folders/${folderId}`, { method: 'DELETE' })
   },
   async importViewBundle(tableId, payload) {
     try {
@@ -110,11 +163,18 @@ export const httpGridApi = createApiClient({
   async deleteField(fieldId) {
     await requestJson<void>(`/fields/${fieldId}`, { method: 'DELETE' })
   },
-  async createView(tableId, name, type) {
+  async createView(tableId, name, type, options) {
     const config = createDefaultViewConfig()
     return requestJson<View>(`/tables/${tableId}/views`, {
       method: 'POST',
-      body: JSON.stringify({ name, type, config }),
+      body: JSON.stringify({
+        name,
+        type,
+        config,
+        folderId: options?.folderId,
+        sourceViewId: options?.sourceViewId,
+        viewRole: options?.viewRole,
+      }),
     })
   },
   async deleteView(viewId) {
@@ -193,20 +253,8 @@ export const httpGridApi = createApiClient({
   async getWorkflowConfig(tableId) {
     return requestJson(`/tables/${tableId}/workflow`)
   },
-  async updateWorkflowConfig(tableId, payload) {
-    return requestJson(`/tables/${tableId}/workflow`, {
-      method: 'PUT',
-      body: JSON.stringify(payload),
-    })
-  },
   async getWorkflowTransitions(tableId) {
     return requestJson(`/tables/${tableId}/workflow/transitions`)
-  },
-  async updateWorkflowTransitions(tableId, payload) {
-    return requestJson(`/tables/${tableId}/workflow/transitions`, {
-      method: 'PUT',
-      body: JSON.stringify({ transitions: payload }),
-    })
   },
   async transitionRecordStatus(recordId, payload) {
     return requestJson(`/records/${recordId}/status-transition`, {
@@ -219,6 +267,12 @@ export const httpGridApi = createApiClient({
   },
   async getViewTabs(viewId) {
     return requestJson(`/views/${viewId}/tabs`)
+  },
+  async batchTabCounts(tableId, viewId, tabs) {
+    return requestJson<Record<string, number>>(`/tables/${tableId}/tab-counts`, {
+      method: 'POST',
+      body: JSON.stringify({ viewId, tabs }),
+    })
   },
   async createViewTab(viewId, payload) {
     return requestJson(`/views/${viewId}/tabs`, {

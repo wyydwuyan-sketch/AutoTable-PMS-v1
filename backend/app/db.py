@@ -1,17 +1,38 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import os
 from pathlib import Path
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 
 DB_PATH = Path(__file__).resolve().parents[1] / "data.db"
 DATABASE_URL = f"sqlite:///{DB_PATH.as_posix()}"
+SQLITE_TIMEOUT_SECONDS = float(os.getenv("SQLITE_TIMEOUT_SECONDS", "30"))
+SQLITE_BUSY_TIMEOUT_MS = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", str(int(SQLITE_TIMEOUT_SECONDS * 1000))))
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={
+        "check_same_thread": False,
+        "timeout": SQLITE_TIMEOUT_SECONDS,
+    },
+)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+
+
+@event.listens_for(engine, "connect")
+def _set_sqlite_pragma(dbapi_connection, _connection_record) -> None:
+    cursor = dbapi_connection.cursor()
+    try:
+        # WAL + busy timeout significantly reduce read/write lock conflicts.
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute(f"PRAGMA busy_timeout={max(SQLITE_BUSY_TIMEOUT_MS, 0)}")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+    finally:
+        cursor.close()
 
 
 class Base(DeclarativeBase):
@@ -238,6 +259,31 @@ def ensure_schema_upgrades() -> None:
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_view_permissions_user_id ON view_permissions(user_id)"))
             table_names.add("view_permissions")
 
+        if "view_folders" not in table_names:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE view_folders (
+                        id VARCHAR(64) PRIMARY KEY,
+                        tenant_id VARCHAR(64) NOT NULL,
+                        table_id VARCHAR(64) NOT NULL,
+                        name VARCHAR(255) NOT NULL,
+                        sort_order INTEGER NOT NULL DEFAULT 0,
+                        is_enabled BOOLEAN NOT NULL DEFAULT 1,
+                        created_at DATETIME NOT NULL
+                    )
+                    """
+                )
+            )
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_view_folders_tenant_id ON view_folders(tenant_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_view_folders_table_id ON view_folders(table_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_view_folders_sort_order ON view_folders(table_id, sort_order, id)"))
+            table_names.add("view_folders")
+        elif "view_folders" in table_names:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_view_folders_tenant_id ON view_folders(tenant_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_view_folders_table_id ON view_folders(table_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_view_folders_sort_order ON view_folders(table_id, sort_order, id)"))
+
         if "table_workflow_configs" not in table_names:
             conn.execute(
                 text(
@@ -346,7 +392,43 @@ def ensure_schema_upgrades() -> None:
         if "records" in table_names and not has_column("records", "version"):
             conn.execute(text("ALTER TABLE records ADD COLUMN version INTEGER NOT NULL DEFAULT 0"))
 
+        if "views" in table_names:
+            if not has_column("views", "folder_id"):
+                conn.execute(text("ALTER TABLE views ADD COLUMN folder_id VARCHAR(64)"))
+            if not has_column("views", "source_view_id"):
+                conn.execute(text("ALTER TABLE views ADD COLUMN source_view_id VARCHAR(64)"))
+            if not has_column("views", "view_role"):
+                conn.execute(text("ALTER TABLE views ADD COLUMN view_role VARCHAR(32) NOT NULL DEFAULT 'primary'"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_views_folder_id ON views(folder_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_views_source_view_id ON views(source_view_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_views_view_role ON views(view_role)"))
+
         for table in ("bases", "tables", "views", "fields", "records"):
             if table in table_names and not has_column(table, "tenant_id"):
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN tenant_id VARCHAR(64)"))
                 conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{table}_tenant_id ON {table}(tenant_id)"))
+
+        if "tables" in table_names:
+            if not has_column("tables", "sort_order"):
+                conn.execute(text("ALTER TABLE tables ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"))
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_tables_base_sort_order "
+                    "ON tables(base_id, sort_order, id)"
+                )
+            )
+
+        if "records" in table_names:
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_records_tenant_table_created_id "
+                    "ON records(tenant_id, table_id, created_at DESC, id DESC)"
+                )
+            )
+        if "record_values" in table_names:
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_record_values_record_field "
+                    "ON record_values(record_id, field_id)"
+                )
+            )

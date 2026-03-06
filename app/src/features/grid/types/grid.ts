@@ -11,6 +11,15 @@ export interface Table {
   name: string
 }
 
+export interface TableCatalogItem extends Table {
+  defaultViewId?: string | null
+  sortOrder?: number
+}
+
+export type ViewType = 'grid' | 'form' | 'kanban'
+
+export type ViewRole = 'primary' | 'derived'
+
 export interface FormFieldSetting {
   label?: string
   description?: string
@@ -88,9 +97,34 @@ export interface FilterPreset {
 export interface View {
   id: string
   tableId: string
+  folderId?: string | null
+  sourceViewId?: string | null
+  viewRole?: ViewRole
   name: string
-  type: 'grid' | 'form' | 'kanban'
+  type: ViewType
   config: ViewConfig
+}
+
+export interface ViewCatalogItem {
+  view: View
+  derivedViews: View[]
+}
+
+export interface ViewFolder {
+  id: string
+  tableId: string
+  name: string
+  sortOrder: number
+  isEnabled: boolean
+}
+
+export interface ViewFolderCatalog extends ViewFolder {
+  primaryViews: ViewCatalogItem[]
+}
+
+export interface ViewCatalog {
+  tableId: string
+  folders: ViewFolderCatalog[]
 }
 
 export interface FieldOption {

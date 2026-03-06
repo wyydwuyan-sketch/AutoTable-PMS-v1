@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import and_, select
+from sqlalchemy import String, and_, cast, func, literal, not_, or_, select
 from sqlalchemy.orm import Session
 
 from .models import FieldModel, RecordModel, RecordValueModel
@@ -26,6 +26,9 @@ def to_view_out(view) -> ViewOut:
     return ViewOut(
         id=view.id,
         tableId=view.table_id,
+        folderId=getattr(view, "folder_id", None),
+        sourceViewId=getattr(view, "source_view_id", None),
+        viewRole=getattr(view, "view_role", None) or "primary",
         name=view.name,
         type=view.type,  # type: ignore[arg-type]
         config=ViewConfig.model_validate(view.config_json),
@@ -218,6 +221,17 @@ def apply_filters_and_sorts(
     sorts: list[dict[str, Any]],
     filter_logic: str = "and",
 ) -> list[RecordModel]:
+    if not records:
+        return []
+
+    value_maps_by_record_id: dict[str, dict[str, Any]] = {
+        record.id: {item.field_id: item.value_json for item in record.values}
+        for record in records
+    }
+
+    def get_value(record: RecordModel, field_id: str) -> Any:
+        return value_maps_by_record_id.get(record.id, {}).get(field_id)
+
     filtered = records
     valid_filters = [item for item in filters if isinstance(item.get("fieldId"), str) and item.get("fieldId")]
     if valid_filters:
@@ -227,7 +241,7 @@ def apply_filters_and_sorts(
                 for filter_item in valid_filters:
                     field_id = str(filter_item.get("fieldId"))
                     field = fields_by_id.get(field_id)
-                    if _match_filter(field, _record_value_by_field(record, field_id), filter_item):
+                    if _match_filter(field, get_value(record, field_id), filter_item):
                         filtered.append(record)
                         break
         else:
@@ -237,7 +251,7 @@ def apply_filters_and_sorts(
                 filtered = [
                     record
                     for record in filtered
-                    if _match_filter(field, _record_value_by_field(record, field_id), filter_item)
+                    if _match_filter(field, get_value(record, field_id), filter_item)
                 ]
 
     sorted_records = filtered
@@ -248,15 +262,159 @@ def apply_filters_and_sorts(
         direction = str(sort_item.get("direction", "asc")).lower()
         field = fields_by_id.get(field_id)
         reverse = direction == "desc"
+        sort_value_by_record_id = {
+            record.id: _normalize_sort_value(field, get_value(record, field_id))
+            for record in sorted_records
+        }
         non_null_records = [
-            record for record in sorted_records if _record_value_by_field(record, field_id) is not None
+            record for record in sorted_records if sort_value_by_record_id.get(record.id) is not None
         ]
-        null_records = [record for record in sorted_records if _record_value_by_field(record, field_id) is None]
+        null_records = [record for record in sorted_records if sort_value_by_record_id.get(record.id) is None]
         non_null_records = sorted(
             non_null_records,
-            key=lambda record: _normalize_sort_value(field, _record_value_by_field(record, field_id)),
+            key=lambda record: sort_value_by_record_id.get(record.id),
             reverse=reverse,
         )
         sorted_records = non_null_records + null_records
 
     return sorted_records
+
+
+def build_record_filter_clause(
+    fields_by_id: dict[str, FieldModel],
+    filters: list[dict[str, Any]],
+    filter_logic: str,
+):
+    valid_filters = [item for item in filters if isinstance(item.get("fieldId"), str) and item.get("fieldId")]
+    if not valid_filters:
+        return literal(True)
+
+    clauses = []
+    for item in valid_filters:
+        clause = _build_sql_filter_clause(fields_by_id, item)
+        if clause is None:
+            return None
+        clauses.append(clause)
+
+    if filter_logic == "or":
+        return or_(*clauses)
+    return and_(*clauses)
+
+
+def _build_sql_filter_clause(fields_by_id: dict[str, FieldModel], item: dict[str, Any]):
+    field_id = item.get("fieldId")
+    if not isinstance(field_id, str) or not field_id:
+        return literal(True)
+
+    field = fields_by_id.get(field_id)
+    if not field:
+        return None
+
+    op = str(item.get("op", "contains")).lower()
+    expected = item.get("value")
+    if op not in {"contains", "eq", "equals", "neq", "in", "nin", "empty", "not_empty", "gt", "gte", "lt", "lte"}:
+        op = "eq" if field.type == "singleSelect" else "contains"
+
+    if field.type in {"multiSelect", "attachment", "image"} and op in {"eq", "equals", "neq", "in", "nin"}:
+        return None
+    if field.type == "checkbox" and op == "contains":
+        return None
+    if op in {"eq", "equals", "neq"} and not _is_sql_scalar(expected):
+        return None
+    if op in {"in", "nin"}:
+        if not isinstance(expected, list):
+            return literal(False) if op == "in" else literal(True)
+        if any(not _is_sql_scalar(item) for item in expected):
+            return None
+
+    value_expr = func.json_extract(RecordValueModel.value_json, "$")
+    value_text = func.lower(func.coalesce(cast(value_expr, String), ""))
+    base_select = select(1).select_from(RecordValueModel).where(
+        RecordValueModel.record_id == RecordModel.id,
+        RecordValueModel.field_id == field_id,
+    )
+    base_exists = base_select.exists()
+
+    def exists_where(*conditions):
+        return base_select.where(*conditions).exists()
+
+    empty_existing = or_(
+        value_expr.is_(None),
+        value_expr == "",
+        value_text.in_(["[]", "{}"]),
+    )
+
+    if op == "contains":
+        term = str(expected or "").lower()
+        if not term:
+            return literal(True)
+        pattern = f"%{_escape_like_term(term)}%"
+        return exists_where(value_text.like(pattern, escape="\\"))
+
+    if op in {"eq", "equals"}:
+        if expected is None:
+            return or_(not_(base_exists), exists_where(value_expr.is_(None)))
+        return exists_where(value_expr == expected)
+
+    if op == "neq":
+        if expected is None:
+            return exists_where(value_expr.is_not(None))
+        return or_(not_(base_exists), exists_where(or_(value_expr != expected, value_expr.is_(None))))
+
+    if op == "in":
+        options = list(expected)
+        non_null_options = [item for item in options if item is not None]
+        clauses = []
+        if non_null_options:
+            clauses.append(exists_where(value_expr.in_(non_null_options)))
+        if any(item is None for item in options):
+            clauses.append(or_(not_(base_exists), exists_where(value_expr.is_(None))))
+        return or_(*clauses) if clauses else literal(False)
+
+    if op == "nin":
+        options = list(expected)
+        non_null_options = [item for item in options if item is not None]
+        disallowed = []
+        if non_null_options:
+            disallowed.append(exists_where(value_expr.in_(non_null_options)))
+        if any(item is None for item in options):
+            disallowed.append(or_(not_(base_exists), exists_where(value_expr.is_(None))))
+        return not_(or_(*disallowed)) if disallowed else literal(True)
+
+    if op == "empty":
+        return or_(not_(base_exists), exists_where(empty_existing))
+
+    if op == "not_empty":
+        return exists_where(not_(empty_existing))
+
+    if field.type == "date" and isinstance(expected, str):
+        if op == "gt":
+            return exists_where(value_expr > expected)
+        if op == "gte":
+            return exists_where(value_expr >= expected)
+        if op == "lt":
+            return exists_where(value_expr < expected)
+        if op == "lte":
+            return exists_where(value_expr <= expected)
+        return literal(False)
+
+    if field.type == "number" and isinstance(expected, (int, float)):
+        if op == "gt":
+            return exists_where(value_expr > expected)
+        if op == "gte":
+            return exists_where(value_expr >= expected)
+        if op == "lt":
+            return exists_where(value_expr < expected)
+        if op == "lte":
+            return exists_where(value_expr <= expected)
+        return literal(False)
+
+    return literal(False)
+
+
+def _is_sql_scalar(value: Any) -> bool:
+    return value is None or isinstance(value, (str, int, float, bool))
+
+
+def _escape_like_term(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

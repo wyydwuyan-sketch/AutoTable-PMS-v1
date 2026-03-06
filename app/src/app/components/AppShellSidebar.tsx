@@ -1,15 +1,16 @@
 import {
   DatabaseOutlined,
   DownOutlined,
-  FormOutlined,
+  FolderOpenOutlined,
   HomeOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  PlusOutlined,
   RightOutlined,
   TableOutlined,
 } from '@ant-design/icons'
 import { Tooltip } from 'antd'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import type { View } from '../../features/grid/types/grid'
 
 type SidebarGroupKey = 'views' | 'configs' | 'systems'
@@ -23,10 +24,12 @@ export type SidebarConfigItem = {
   status?: 'enabled' | 'soon'
 }
 
-type SidebarViewGroup = {
+type SidebarFolderItem = {
+  id: string
   tableId: string
   tableName: string
-  views: View[]
+  name: string
+  primaryViews: View[]
 }
 
 interface AppShellSidebarProps {
@@ -35,11 +38,13 @@ interface AppShellSidebarProps {
   onToggleSidebarCollapsed: () => void
   onToggleSidebarGroup: (key: SidebarGroupKey) => void
   onOpenHome: () => void
-  sidebarVisibleViews: View[]
-  activeViewId: string
-  activeTableId: string
+  canCreateTable: boolean
+  isCreatingTable?: boolean
+  onCreateTable: () => void
+  sidebarFolders: SidebarFolderItem[]
+  activePrimaryViewId: string
+  activeFolderId: string | null
   onOpenSidebarView: (view: View) => void
-  tableNameMap: Map<string, { name: string; order: number }>
   dataViewConfigItems: SidebarConfigItem[]
   systemConfigItems: SidebarConfigItem[]
   activeConfigKey: string
@@ -63,68 +68,44 @@ export function AppShellSidebar({
   onToggleSidebarCollapsed,
   onToggleSidebarGroup,
   onOpenHome,
-  sidebarVisibleViews,
-  activeViewId,
-  activeTableId,
+  canCreateTable,
+  isCreatingTable = false,
+  onCreateTable,
+  sidebarFolders,
+  activePrimaryViewId,
+  activeFolderId,
   onOpenSidebarView,
-  tableNameMap,
   dataViewConfigItems,
   systemConfigItems,
   activeConfigKey,
   onOpenConfigRoute,
 }: AppShellSidebarProps) {
-  const groupedSidebarViews = useMemo<SidebarViewGroup[]>(() => {
-    const groups = new Map<string, SidebarViewGroup>()
-
-    for (const view of sidebarVisibleViews) {
-      const tableName = tableNameMap.get(view.tableId)?.name ?? '数据表'
-      const current = groups.get(view.tableId)
-      if (current) {
-        current.views.push(view)
-        continue
-      }
-      groups.set(view.tableId, {
-        tableId: view.tableId,
-        tableName,
-        views: [view],
-      })
-    }
-
-    return [...groups.values()].sort((a, b) => {
-      const ao = tableNameMap.get(a.tableId)?.order ?? Number.MAX_SAFE_INTEGER
-      const bo = tableNameMap.get(b.tableId)?.order ?? Number.MAX_SAFE_INTEGER
-      if (ao !== bo) return ao - bo
-      return a.tableName.localeCompare(b.tableName, 'zh-Hans-CN')
-    })
-  }, [sidebarVisibleViews, tableNameMap])
-
-  const [viewTableGroupsOpen, setViewTableGroupsOpen] = useState<Record<string, boolean>>({})
+  const [folderGroupsOpen, setFolderGroupsOpen] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
-    if (groupedSidebarViews.length === 0) return
-    setViewTableGroupsOpen((prev) => {
+    if (sidebarFolders.length === 0) return
+    setFolderGroupsOpen((prev) => {
       const next: Record<string, boolean> = {}
       let changed = false
-      for (const group of groupedSidebarViews) {
-        const current = prev[group.tableId]
+      for (const folder of sidebarFolders) {
+        const current = prev[folder.id]
         if (typeof current === 'boolean') {
-          next[group.tableId] = current
+          next[folder.id] = current
         } else {
-          next[group.tableId] = group.tableId === activeTableId || groupedSidebarViews.length <= 2
+          next[folder.id] = folder.id === activeFolderId || sidebarFolders.length <= 2
           changed = true
         }
       }
-      if (next[activeTableId] === false) {
-        next[activeTableId] = true
+      if (activeFolderId && next[activeFolderId] === false) {
+        next[activeFolderId] = true
         changed = true
       }
-      const prevKeys = Object.keys(prev)
-      if (prevKeys.length !== Object.keys(next).length) {
+      if (Object.keys(prev).length !== Object.keys(next).length) {
         changed = true
       }
       return changed ? next : prev
     })
-  }, [activeTableId, groupedSidebarViews])
+  }, [activeFolderId, sidebarFolders])
 
   const renderSidebarMenuItem = ({
     key,
@@ -264,65 +245,74 @@ export function AppShellSidebar({
           ) : null}
           {(!sidebarCollapsed || sidebarGroupsOpen.views) ? (
             <div className="sidebar-menu">
-              {groupedSidebarViews.length === 0 ? (
+              {canCreateTable
+                ? renderSidebarMenuItem({
+                  key: 'create-table',
+                  title: '新增数据表',
+                  onClick: onCreateTable,
+                  icon: <PlusOutlined />,
+                  label: isCreatingTable ? '创建中...' : '新增数据表',
+                  disabled: isCreatingTable,
+                })
+                : null}
+              {sidebarFolders.length === 0 ? (
                 <div className="sidebar-menu-item is-disabled" style={{ opacity: 0.5, cursor: 'default' }}>
                   {!sidebarCollapsed ? <span className="sidebar-menu-item-label">暂无可用视图</span> : null}
                 </div>
               ) : sidebarCollapsed ? (
-                groupedSidebarViews.flatMap((group) =>
-                  group.views.map((view) =>
+                sidebarFolders.flatMap((folder) =>
+                  folder.primaryViews.map((view) =>
                     renderSidebarMenuItem({
                       key: `view:${view.id}`,
-                      title: `${group.tableName} / ${view.name}`,
-                      active: view.id === activeViewId && view.tableId === activeTableId,
+                      title: `${folder.name} / ${view.name}`,
+                      active: view.id === activePrimaryViewId,
                       onClick: () => onOpenSidebarView(view),
-                      icon: view.type === 'form' ? <FormOutlined /> : <TableOutlined />,
+                      icon: <TableOutlined />,
                       label: view.name,
-                      ariaCurrent: view.id === activeViewId && view.tableId === activeTableId ? 'page' : undefined,
+                      ariaCurrent: view.id === activePrimaryViewId ? 'page' : undefined,
                     }),
                   ),
                 )
               ) : (
-                groupedSidebarViews.map((group) => {
-                  const isGroupOpen = viewTableGroupsOpen[group.tableId] !== false
-                  const hasActiveView = group.views.some(
-                    (view) => view.id === activeViewId && view.tableId === activeTableId,
-                  )
+                sidebarFolders.map((folder) => {
+                  const isFolderOpen = folderGroupsOpen[folder.id] !== false
+                  const hasActiveView = folder.primaryViews.some((view) => view.id === activePrimaryViewId)
 
                   return (
                     <div
-                      key={`table-group:${group.tableId}`}
+                      key={`folder-group:${folder.id}`}
                       className={`sidebar-subgroup${hasActiveView ? ' is-active' : ''}`}
                     >
                       <button
                         type="button"
                         className="sidebar-subgroup-toggle"
                         onClick={() =>
-                          setViewTableGroupsOpen((prev) => ({
+                          setFolderGroupsOpen((prev) => ({
                             ...prev,
-                            [group.tableId]: !(prev[group.tableId] !== false),
+                            [folder.id]: !(prev[folder.id] !== false),
                           }))
                         }
-                        aria-expanded={isGroupOpen}
+                        aria-expanded={isFolderOpen}
+                        title={folder.tableName}
                       >
                         <span className="sidebar-subgroup-caret" aria-hidden="true">
-                          {isGroupOpen ? <DownOutlined /> : <RightOutlined />}
+                          {isFolderOpen ? <DownOutlined /> : <RightOutlined />}
                         </span>
-                        <span className="sidebar-menu-icon"><DatabaseOutlined /></span>
-                        <span className="sidebar-subgroup-title">{group.tableName}</span>
+                        <span className="sidebar-menu-icon"><FolderOpenOutlined /></span>
+                        <span className="sidebar-subgroup-title">{folder.name}</span>
                       </button>
-                      {isGroupOpen ? (
+                      {isFolderOpen ? (
                         <div className="sidebar-menu sidebar-menu--nested">
-                          {group.views.map((view) =>
+                          {folder.primaryViews.map((view) =>
                             renderSidebarMenuItem({
                               key: `view:${view.id}`,
-                              title: `${group.tableName} / ${view.name}`,
-                              active: view.id === activeViewId && view.tableId === activeTableId,
+                              title: `${folder.name} / ${view.name}`,
+                              active: view.id === activePrimaryViewId,
                               onClick: () => onOpenSidebarView(view),
-                              icon: view.type === 'form' ? <FormOutlined /> : <TableOutlined />,
+                              icon: <DatabaseOutlined />,
                               label: view.name,
                               nested: true,
-                              ariaCurrent: view.id === activeViewId && view.tableId === activeTableId ? 'page' : undefined,
+                              ariaCurrent: view.id === activePrimaryViewId ? 'page' : undefined,
                             }),
                           )}
                         </div>

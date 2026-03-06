@@ -27,7 +27,7 @@ export function ViewSetupWizard({
 
   useEffect(() => {
     if (!open) return
-    setCheckedFieldIds(fields.map((field) => field.id))
+    setCheckedFieldIds([])
     setComponentTypeByFieldId(
       Object.fromEntries(fields.map((field) => [field.id, 'default' as FieldComponentType])),
     )

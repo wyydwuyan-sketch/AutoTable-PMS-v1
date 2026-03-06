@@ -28,7 +28,7 @@ export function LoginPage() {
     setError('')
     try {
       await login(username, password)
-      navigate('/b/base_1/t/tbl_1/v/viw_1', { replace: true })
+      navigate('/', { replace: true })
     } catch (err) {
       const message = err instanceof Error ? err.message : '登录失败'
       if (message.includes('首次登录请先修改密码')) {
@@ -59,7 +59,7 @@ export function LoginPage() {
       await authApi.firstLoginChangePassword(flAccount, flPassword, flNewPassword)
       setFirstLoginOpen(false)
       await login(flAccount, flNewPassword)
-      navigate('/b/base_1/t/tbl_1/v/viw_1', { replace: true })
+      navigate('/', { replace: true })
     } catch (err) {
       setFlError(err instanceof Error ? err.message : '修改密码失败')
     } finally {

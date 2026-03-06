@@ -4,6 +4,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .auth import hash_password, verify_password
+from .constants import DEFAULT_VIEW_CONFIG
 from .constants import BUILTIN_TENANT_ROLE_DEFAULTS
 from .config import TEST_ADMIN_PASSWORD, TEST_ADMIN_USERNAME
 from .db import Base, engine
@@ -19,11 +20,13 @@ from .models import (
     TenantModel,
     TenantRoleModel,
     UserModel,
+    ViewFolderModel,
     ViewPermissionModel,
     ViewModel,
     WorkflowTransitionModel,
 )
 from .services import now_utc_naive
+from .tenant_helpers import _next_id
 
 
 def init_db() -> None:
@@ -54,6 +57,199 @@ def _ensure_default_roles(db: Session, tenant_id: str) -> None:
         changed = True
     if changed:
         db.commit()
+
+
+def _backfill_missing_role_default_permissions(db: Session, tenant_id: str) -> None:
+    role_map = {
+        item.key: item
+        for item in db.scalars(select(TenantRoleModel).where(TenantRoleModel.tenant_id == tenant_id)).all()
+    }
+    memberships = db.scalars(
+        select(MembershipModel).where(
+            MembershipModel.tenant_id == tenant_id,
+            MembershipModel.role != "owner",
+        )
+    ).all()
+    if not memberships:
+        return
+
+    table_ids = [item.id for item in db.scalars(select(TableModel).where(TableModel.tenant_id == tenant_id)).all()]
+    view_ids = [item.id for item in db.scalars(select(ViewModel).where(ViewModel.tenant_id == tenant_id)).all()]
+    changed = False
+
+    for membership in memberships:
+        role = role_map.get((membership.role_key or "member").strip() or "member")
+        if not role:
+            continue
+        if not (role.can_manage_permissions or role.default_table_can_write):
+            continue
+
+        can_read = role.default_table_can_read or role.default_table_can_write
+        can_write = role.default_table_can_write
+
+        has_any_table_permission = db.scalar(
+            select(TablePermissionModel).where(
+                TablePermissionModel.tenant_id == tenant_id,
+                TablePermissionModel.user_id == membership.user_id,
+            )
+        )
+        if not has_any_table_permission:
+            for table_id in table_ids:
+                db.add(
+                    TablePermissionModel(
+                        tenant_id=tenant_id,
+                        table_id=table_id,
+                        user_id=membership.user_id,
+                        can_read=can_read,
+                        can_write=can_write,
+                        created_at=now_utc_naive(),
+                    )
+                )
+            changed = changed or bool(table_ids)
+
+        has_any_view_permission = db.scalar(
+            select(ViewPermissionModel).where(
+                ViewPermissionModel.tenant_id == tenant_id,
+                ViewPermissionModel.user_id == membership.user_id,
+            )
+        )
+        if not has_any_view_permission:
+            for view_id in view_ids:
+                db.add(
+                    ViewPermissionModel(
+                        tenant_id=tenant_id,
+                        view_id=view_id,
+                        user_id=membership.user_id,
+                        can_read=can_read,
+                        can_write=can_write,
+                        created_at=now_utc_naive(),
+                    )
+                )
+            changed = changed or bool(view_ids)
+
+    if changed:
+        db.commit()
+
+
+def _view_order_key(view: ViewModel) -> tuple[int, str]:
+    config = view.config_json or {}
+    return (int(config.get("order", 0)), view.id)
+
+
+def _ensure_view_permissions_from_table_permissions(
+    db: Session,
+    tenant_id: str,
+    table_id: str,
+    view_id: str,
+) -> None:
+    table_permissions = db.scalars(
+        select(TablePermissionModel).where(
+            TablePermissionModel.tenant_id == tenant_id,
+            TablePermissionModel.table_id == table_id,
+        )
+    ).all()
+    for permission in table_permissions:
+        existing = db.scalar(
+            select(ViewPermissionModel).where(
+                ViewPermissionModel.tenant_id == tenant_id,
+                ViewPermissionModel.view_id == view_id,
+                ViewPermissionModel.user_id == permission.user_id,
+            )
+        )
+        if existing:
+            continue
+        db.add(
+            ViewPermissionModel(
+                tenant_id=tenant_id,
+                view_id=view_id,
+                user_id=permission.user_id,
+                can_read=bool(permission.can_read or permission.can_write),
+                can_write=bool(permission.can_write),
+                created_at=now_utc_naive(),
+            )
+        )
+
+
+def _ensure_table_view_catalog_defaults(db: Session, tenant_id: str, table: TableModel) -> None:
+    folders = db.scalars(
+        select(ViewFolderModel)
+        .where(ViewFolderModel.tenant_id == tenant_id, ViewFolderModel.table_id == table.id)
+        .order_by(ViewFolderModel.sort_order.asc(), ViewFolderModel.id.asc())
+    ).all()
+    default_folder = folders[0] if folders else None
+    if not default_folder:
+        default_folder = ViewFolderModel(
+            id=_next_id("vfd"),
+            tenant_id=tenant_id,
+            table_id=table.id,
+            name=table.name,
+            sort_order=0,
+            is_enabled=True,
+            created_at=now_utc_naive(),
+        )
+        db.add(default_folder)
+        db.flush()
+        folders = [default_folder]
+
+    valid_folder_ids = {item.id for item in folders}
+    views = db.scalars(
+        select(ViewModel)
+        .where(ViewModel.tenant_id == tenant_id, ViewModel.table_id == table.id)
+        .order_by(ViewModel.id.asc())
+    ).all()
+    if not views:
+        return
+
+    ordered_views = sorted(views, key=_view_order_key)
+    primary_views: list[ViewModel] = []
+    for view in ordered_views:
+        if view.type != "grid":
+            continue
+        if view.source_view_id is not None:
+            view.source_view_id = None
+        if view.view_role != "primary":
+            view.view_role = "primary"
+        if view.folder_id not in valid_folder_ids:
+            view.folder_id = default_folder.id
+        primary_views.append(view)
+
+    if not primary_views:
+        next_order = max((int((view.config_json or {}).get("order", 0)) for view in ordered_views), default=-1) + 1
+        created_primary = ViewModel(
+            id=_next_id("viw"),
+            tenant_id=tenant_id,
+            table_id=table.id,
+            folder_id=default_folder.id,
+            source_view_id=None,
+            view_role="primary",
+            name="表格",
+            type="grid",
+            config_json={**dict(DEFAULT_VIEW_CONFIG), "order": next_order, "isEnabled": True},
+        )
+        db.add(created_primary)
+        db.flush()
+        _ensure_view_permissions_from_table_permissions(db, tenant_id, table.id, created_primary.id)
+        primary_views = [created_primary]
+        ordered_views.append(created_primary)
+
+    primary_views = sorted(primary_views, key=_view_order_key)
+    primary_ids = {item.id for item in primary_views}
+    default_primary = primary_views[0]
+    primary_by_id = {item.id: item for item in primary_views}
+
+    for view in ordered_views:
+        if view.id in primary_ids:
+            continue
+        if view.view_role != "derived":
+            view.view_role = "derived"
+        source_view = primary_by_id.get(view.source_view_id or "")
+        if source_view is None:
+            source_view = default_primary
+            view.source_view_id = source_view.id
+        if view.folder_id != source_view.folder_id:
+            view.folder_id = source_view.folder_id
+
+    db.flush()
 
 
 def _ensure_project_management_defaults(db: Session, tenant_id: str, owner_id: str) -> None:
@@ -159,6 +355,7 @@ def _ensure_project_management_defaults(db: Session, tenant_id: str, owner_id: s
             id=preferred_id if not exists_same_id else "viw_kanban_seed",
             tenant_id=tenant_id,
             table_id=table.id,
+            view_role="derived",
             name="看板",
             type="kanban",
             config_json={
@@ -193,6 +390,9 @@ def _ensure_project_management_defaults(db: Session, tenant_id: str, owner_id: s
                 created_at=now_utc_naive(),
             )
         )
+
+    db.flush()
+    _ensure_table_view_catalog_defaults(db, tenant_id, table)
 
     view_ids = [
         item.id
@@ -342,6 +542,15 @@ def ensure_seed_data(db: Session) -> None:
             )
     db.commit()
 
+    tables = db.scalars(
+        select(TableModel)
+        .where(TableModel.tenant_id.is_not(None))
+        .order_by(TableModel.tenant_id.asc(), TableModel.id.asc())
+    ).all()
+    for table in tables:
+        _ensure_table_view_catalog_defaults(db, table.tenant_id, table)
+    db.commit()
+
     view_ids = [item.id for item in db.scalars(select(ViewModel).where(ViewModel.tenant_id == tenant.id)).all()]
     for view_id in view_ids:
         perm = db.scalar(
@@ -367,6 +576,7 @@ def ensure_seed_data(db: Session) -> None:
     existing_base = db.scalar(select(BaseModel).where(BaseModel.id == "base_1"))
     if existing_base:
         _ensure_project_management_defaults(db, tenant.id, owner.id)
+        _backfill_missing_role_default_permissions(db, tenant.id)
         return
 
     base = BaseModel(id="base_1", tenant_id=tenant.id, name="我的多维表格")
@@ -472,3 +682,4 @@ def ensure_seed_data(db: Session) -> None:
     )
     db.commit()
     _ensure_project_management_defaults(db, tenant.id, owner.id)
+    _backfill_missing_role_default_permissions(db, tenant.id)

@@ -101,7 +101,7 @@ export function SortModal({ open, onCancel, fields, viewConfig, onUpdateViewConf
           resetDrafts()
         }
       }}
-      destroyOnClose={false}
+      destroyOnHidden={false}
     >
       <Space direction="vertical" size={12} style={{ display: 'flex' }}>
         <Card size="small" styles={{ body: { padding: 12 } }}>

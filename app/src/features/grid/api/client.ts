@@ -7,16 +7,21 @@ import type {
   RecordModel,
   RecordStatusLog,
   ReferenceMember,
+  TableCatalogItem,
   SortCondition,
   TableButtonPermissionItem,
   TableButtonPermissions,
   TablePermissionItem,
   TablePermissionPatchItem,
+  ViewCatalog,
   ViewTab,
   ViewTabPayload,
+  ViewFolder,
   ViewPermissionItem,
   View,
   ViewConfig,
+  ViewRole,
+  ViewType,
   WorkflowConfig,
   WorkflowTransitionPair,
 } from '../types/grid'
@@ -33,14 +38,31 @@ export interface RecordPageResult {
   totalCount: number
 }
 
+export interface CreateViewOptions {
+  folderId?: string | null
+  sourceViewId?: string | null
+  viewRole?: ViewRole
+}
+
 export interface GridApiClient {
+  getTables: (baseId: string) => Promise<TableCatalogItem[]>
+  createTable: (baseId: string, name: string) => Promise<TableCatalogItem>
+  updateTable: (tableId: string, patch: { name?: string }) => Promise<TableCatalogItem>
+  deleteTable: (tableId: string) => Promise<void>
+  reorderTables: (baseId: string, orderedIds: string[]) => Promise<TableCatalogItem[]>
   getFields: (tableId: string) => Promise<Field[]>
   getViews: (tableId: string) => Promise<View[]>
+  getViewCatalog: (tableId: string) => Promise<ViewCatalog>
+  createViewFolder: (tableId: string, name: string) => Promise<ViewFolder>
+  updateViewFolder: (folderId: string, patch: { name?: string; isEnabled?: boolean }) => Promise<ViewFolder>
+  reorderViewFolders: (tableId: string, orderedIds: string[]) => Promise<ViewFolder[]>
+  deleteViewFolder: (folderId: string) => Promise<void>
   importViewBundle: (
     tableId: string,
     payload: {
       viewName: string
-      viewType?: 'grid' | 'form' | 'kanban'
+      viewType?: ViewType
+      folderId?: string | null
       fields: Array<{
         name: string
         type?: FieldType
@@ -67,9 +89,12 @@ export interface GridApiClient {
   deleteRecord: (recordId: string) => Promise<void>
   createField: (tableId: string, name: string, type: FieldType, options?: Array<{ id: string; name: string; color?: string; parentId?: string }>) => Promise<Field>
   deleteField: (fieldId: string) => Promise<void>
-  createView: (tableId: string, name: string, type: 'grid' | 'form' | 'kanban') => Promise<View>
+  createView: (tableId: string, name: string, type: ViewType, options?: CreateViewOptions) => Promise<View>
   deleteView: (viewId: string) => Promise<void>
-  updateView: (viewId: string, patch: { name?: string; type?: 'grid' | 'form' | 'kanban'; config?: ViewConfig }) => Promise<View>
+  updateView: (
+    viewId: string,
+    patch: { name?: string; type?: ViewType; config?: ViewConfig; folderId?: string | null; sourceViewId?: string | null; viewRole?: ViewRole },
+  ) => Promise<View>
   getTablePermissions: (tableId: string) => Promise<TablePermissionItem[]>
   updateTablePermissions: (tableId: string, items: TablePermissionPatchItem[]) => Promise<TablePermissionItem[]>
   applyTablePermissionsByRoleDefaults: (tableId: string) => Promise<TablePermissionItem[]>
@@ -81,21 +106,18 @@ export interface GridApiClient {
   applyViewPermissionsByRoleDefaults: (viewId: string) => Promise<ViewPermissionItem[]>
   getTableReferenceMembers: (tableId: string) => Promise<ReferenceMember[]>
   getWorkflowConfig: (tableId: string) => Promise<WorkflowConfig>
-  updateWorkflowConfig: (
-    tableId: string,
-    payload: { statusFieldId: string | null; allowAnyTransition: boolean; finalStatusOptionIds: string[] },
-  ) => Promise<WorkflowConfig>
   getWorkflowTransitions: (tableId: string) => Promise<WorkflowTransitionPair[]>
-  updateWorkflowTransitions: (
-    tableId: string,
-    payload: Array<{ fromOptionId: string; toOptionIds: string[] }>,
-  ) => Promise<WorkflowTransitionPair[]>
   transitionRecordStatus: (
     recordId: string,
     payload: { toStatusOptionId: string; source?: 'kanban' | 'drawer' | 'api'; expectedVersion?: number },
   ) => Promise<{ record: RecordModel; fromStatusOptionId: string | null; toStatusOptionId: string }>
   getRecordStatusLogs: (recordId: string) => Promise<RecordStatusLog[]>
   getViewTabs: (viewId: string) => Promise<ViewTab[]>
+  batchTabCounts: (
+    tableId: string,
+    viewId: string,
+    tabs: Array<{ tabId: string; payload: ViewTabPayload }>,
+  ) => Promise<Record<string, number>>
   createViewTab: (
     viewId: string,
     payload: { name: string; visibility: 'personal' | 'shared'; payload: ViewTabPayload; sortOrder?: number },

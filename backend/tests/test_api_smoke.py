@@ -2,8 +2,15 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import unittest
+from pathlib import Path
 from uuid import uuid4
+
+# Allow `python -m unittest discover ...` from the repo root and from `backend/`.
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
 
 os.environ.setdefault("JWT_SECRET", "test-jwt-secret-for-ci-0123456789abcd")
 os.environ.setdefault("SEED_OWNER_PASSWORD", "owner-test-password-123")
@@ -12,7 +19,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.auth import hash_password
-from app.db import db_context, ensure_schema_upgrades
+from app.config import TEST_ADMIN_PASSWORD, TEST_ADMIN_USERNAME
+from app.db import db_context, engine, ensure_schema_upgrades
 from app.main import app
 from app.models import (
     AuditLogModel,
@@ -25,37 +33,52 @@ from app.models import (
     UserModel,
     ViewModel,
 )
+from app.seed import ensure_seed_data
 from app.services import now_utc_naive
 
 
 class ApiSmokeTests(unittest.TestCase):
+    @classmethod
+    def tearDownClass(cls) -> None:
+        # Release pooled sqlite handles so Windows test runs do not report leaked connections.
+        engine.dispose()
+
     def setUp(self) -> None:
         ensure_schema_upgrades()
         self.client = TestClient(app)
-        self.owner_password = "owner-test-password-123"
-        self._ensure_owner_password(self.owner_password)
-        self.access_token = self._login_as_owner()
+        self.admin_username = TEST_ADMIN_USERNAME
+        self.admin_password = TEST_ADMIN_PASSWORD
+        self._ensure_admin_password(self.admin_password)
+        self.access_token = self._login_as_seed_admin()
         self.headers = {"Authorization": f"Bearer {self.access_token}"}
+        self.tbl1_view_id = self._get_default_view_id("tbl_1")
 
     def tearDown(self) -> None:
         self.client.close()
 
-    def _ensure_owner_password(self, password: str) -> None:
+    def _ensure_admin_password(self, password: str) -> None:
         with db_context() as db:
-            owner = db.scalar(select(UserModel).where(UserModel.username == "owner"))
+            owner = db.scalar(select(UserModel).where(UserModel.username == self.admin_username))
             self.assertIsNotNone(owner)
             owner.password_hash = hash_password(password)
             owner.must_change_password = False
             db.commit()
 
-    def _login_as_owner(self) -> str:
+    def _login_as_seed_admin(self) -> str:
         resp = self.client.post(
             "/auth/login",
-            json={"username": "owner", "password": self.owner_password},
+            json={"username": self.admin_username, "password": self.admin_password},
         )
         self.assertEqual(resp.status_code, 200)
         payload = resp.json()
         return payload["accessToken"]
+
+    def _get_default_view_id(self, table_id: str) -> str:
+        with db_context() as db:
+            views = db.scalars(select(ViewModel).where(ViewModel.table_id == table_id)).all()
+        self.assertTrue(views)
+        primary = next((view for view in views if (view.view_role or "primary") == "primary"), None)
+        return (primary or views[0]).id
 
     def _ensure_member_and_login(self) -> tuple[str, str]:
         username = f"member_{uuid4().hex[:6]}"
@@ -98,7 +121,7 @@ class ApiSmokeTests(unittest.TestCase):
         resp = self.client.get("/auth/me", headers=self.headers)
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
-        self.assertEqual(body["user"]["username"], "owner")
+        self.assertEqual(body["user"]["username"], self.admin_username)
         self.assertTrue(body["currentTenant"]["id"])
 
     def test_create_form_view_and_list_views(self) -> None:
@@ -132,7 +155,7 @@ class ApiSmokeTests(unittest.TestCase):
         resp = self.client.get(
             "/tables/tbl_1/records",
             headers=self.headers,
-            params={"viewId": "viw_1", "cursor": "0", "pageSize": 5},
+            params={"viewId": self.tbl1_view_id, "cursor": "0", "pageSize": 5},
         )
         self.assertEqual(resp.status_code, 200)
         payload = resp.json()
@@ -157,7 +180,7 @@ class ApiSmokeTests(unittest.TestCase):
             "/tables/tbl_1/records",
             headers=self.headers,
             params={
-                "viewId": "viw_1",
+                "viewId": self.tbl1_view_id,
                 "pageSize": 20,
                 "filters": json.dumps([{"fieldId": target_field["id"], "op": "contains", "value": keyword}]),
             },
@@ -166,6 +189,206 @@ class ApiSmokeTests(unittest.TestCase):
         items = resp.json().get("items", [])
         self.assertGreaterEqual(len(items), 1)
         self.assertTrue(any(item.get("values", {}).get(target_field["id"]) == keyword for item in items))
+
+    def test_records_query_post_filters_page_supported_conditions(self) -> None:
+        token = uuid4().hex[:8]
+        field_resp = self.client.post(
+            "/tables/tbl_1/fields",
+            headers=self.headers,
+            json={"name": f"SQL分页字段_{token}", "type": "text", "width": 180},
+        )
+        self.assertEqual(field_resp.status_code, 200)
+        field_id = field_resp.json()["id"]
+
+        for value in (f"batch-{token}-1", f"batch-{token}-2", f"other-{token}-3"):
+            created = self.client.post(
+                "/tables/tbl_1/records",
+                headers=self.headers,
+                json={"initialValues": {field_id: value}},
+            )
+            self.assertEqual(created.status_code, 200)
+
+        resp = self.client.post(
+            "/tables/tbl_1/records/query",
+            headers=self.headers,
+            json={
+                "viewId": self.tbl1_view_id,
+                "cursor": "0",
+                "pageSize": 1,
+                "filters": [{"fieldId": field_id, "op": "contains", "value": f"batch-{token}"}],
+                "sorts": [],
+                "filterLogic": "and",
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body.get("totalCount"), 2)
+        self.assertEqual(len(body.get("items", [])), 1)
+        self.assertTrue(body.get("nextCursor"))
+        self.assertIn(f"batch-{token}", body["items"][0]["values"][field_id])
+
+    def test_records_query_post_falls_back_for_multi_select_equality(self) -> None:
+        token = uuid4().hex[:8]
+        field_resp = self.client.post(
+            "/tables/tbl_1/fields",
+            headers=self.headers,
+            json={
+                "name": f"查询回退多选_{token}",
+                "type": "multiSelect",
+                "width": 180,
+                "options": [
+                    {"id": f"opt_{token}_a", "name": "A"},
+                    {"id": f"opt_{token}_b", "name": "B"},
+                ],
+            },
+        )
+        self.assertEqual(field_resp.status_code, 200)
+        field_id = field_resp.json()["id"]
+
+        for value in ([f"opt_{token}_a"], [f"opt_{token}_b"]):
+            created = self.client.post(
+                "/tables/tbl_1/records",
+                headers=self.headers,
+                json={"initialValues": {field_id: value}},
+            )
+            self.assertEqual(created.status_code, 200)
+
+        resp = self.client.post(
+            "/tables/tbl_1/records/query",
+            headers=self.headers,
+            json={
+                "viewId": self.tbl1_view_id,
+                "cursor": "0",
+                "pageSize": 10,
+                "filters": [{"fieldId": field_id, "op": "eq", "value": [f"opt_{token}_a"]}],
+                "sorts": [],
+                "filterLogic": "and",
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body.get("totalCount"), 1)
+        self.assertEqual(len(body.get("items", [])), 1)
+        self.assertEqual(body["items"][0]["values"][field_id], [f"opt_{token}_a"])
+
+    def test_tab_counts_endpoint_counts_supported_filters(self) -> None:
+        token = uuid4().hex[:8]
+        field_resp = self.client.post(
+            "/tables/tbl_1/fields",
+            headers=self.headers,
+            json={"name": f"标签计数字段_{token}", "type": "text", "width": 180},
+        )
+        self.assertEqual(field_resp.status_code, 200)
+        field_id = field_resp.json()["id"]
+
+        records = [
+            f"marker-{token}-alpha",
+            f"marker-{token}-beta",
+            f"solo-{token}-gamma",
+        ]
+        for value in records:
+            created = self.client.post(
+                "/tables/tbl_1/records",
+                headers=self.headers,
+                json={"initialValues": {field_id: value}},
+            )
+            self.assertEqual(created.status_code, 200)
+
+        resp = self.client.post(
+            "/tables/tbl_1/tab-counts",
+            headers=self.headers,
+            json={
+                "viewId": self.tbl1_view_id,
+                "tabs": [
+                    {"tabId": "all", "payload": {"filterLogic": "and", "filters": [], "sorts": []}},
+                    {
+                        "tabId": "marker",
+                        "payload": {
+                            "filterLogic": "and",
+                            "filters": [{"fieldId": field_id, "op": "contains", "value": f"marker-{token}"}],
+                            "sorts": [],
+                        },
+                    },
+                    {
+                        "tabId": "alpha_or_gamma",
+                        "payload": {
+                            "filterLogic": "or",
+                            "filters": [
+                                {"fieldId": field_id, "op": "contains", "value": f"alpha"},
+                                {"fieldId": field_id, "op": "contains", "value": f"gamma"},
+                            ],
+                            "sorts": [],
+                        },
+                    },
+                ],
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+        counts = resp.json()
+        self.assertGreaterEqual(counts.get("all", 0), 3)
+        self.assertEqual(counts.get("marker"), 2)
+        self.assertEqual(counts.get("alpha_or_gamma"), 2)
+
+    def test_tab_counts_endpoint_falls_back_for_multi_select_equality(self) -> None:
+        token = uuid4().hex[:8]
+        field_resp = self.client.post(
+            "/tables/tbl_1/fields",
+            headers=self.headers,
+            json={
+                "name": f"多选计数字段_{token}",
+                "type": "multiSelect",
+                "width": 180,
+                "options": [
+                    {"id": f"opt_{token}_a", "name": "A"},
+                    {"id": f"opt_{token}_b", "name": "B"},
+                ],
+            },
+        )
+        self.assertEqual(field_resp.status_code, 200)
+        field_id = field_resp.json()["id"]
+
+        created_a = self.client.post(
+            "/tables/tbl_1/records",
+            headers=self.headers,
+            json={"initialValues": {field_id: [f"opt_{token}_a"]}},
+        )
+        self.assertEqual(created_a.status_code, 200)
+        created_b = self.client.post(
+            "/tables/tbl_1/records",
+            headers=self.headers,
+            json={"initialValues": {field_id: [f"opt_{token}_b"]}},
+        )
+        self.assertEqual(created_b.status_code, 200)
+
+        resp = self.client.post(
+            "/tables/tbl_1/tab-counts",
+            headers=self.headers,
+            json={
+                "viewId": self.tbl1_view_id,
+                "tabs": [
+                    {
+                        "tabId": "exact_multi",
+                        "payload": {
+                            "filterLogic": "and",
+                            "filters": [{"fieldId": field_id, "op": "eq", "value": [f"opt_{token}_a"]}],
+                            "sorts": [],
+                        },
+                    },
+                    {
+                        "tabId": "contains_multi",
+                        "payload": {
+                            "filterLogic": "and",
+                            "filters": [{"fieldId": field_id, "op": "contains", "value": f"opt_{token}_b"}],
+                            "sorts": [],
+                        },
+                    },
+                ],
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+        counts = resp.json()
+        self.assertEqual(counts.get("exact_multi"), 1)
+        self.assertEqual(counts.get("contains_multi"), 1)
 
     def test_cross_tenant_access_denied_and_logged(self) -> None:
         other_table_id = f"tbl_other_{uuid4().hex[:6]}"
@@ -409,7 +632,7 @@ class ApiSmokeTests(unittest.TestCase):
         denied_before = self.client.get(
             "/tables/tbl_1/records",
             headers=member_headers,
-            params={"viewId": "viw_1", "pageSize": 5},
+            params={"viewId": self.tbl1_view_id, "pageSize": 5},
         )
         self.assertEqual(denied_before.status_code, 403)
         with db_context() as db:
@@ -418,14 +641,14 @@ class ApiSmokeTests(unittest.TestCase):
                 .where(
                     AuditLogModel.action == "view_permission_denied",
                     AuditLogModel.resource_type == "view",
-                    AuditLogModel.resource_id == "viw_1",
+                    AuditLogModel.resource_id == self.tbl1_view_id,
                 )
                 .order_by(AuditLogModel.id.desc())
             )
             self.assertIsNotNone(log)
 
         allow_view = self.client.put(
-            "/views/viw_1/permissions",
+            f"/views/{self.tbl1_view_id}/permissions",
             headers=self.headers,
             json={"items": [{"userId": member_user_id, "canRead": True, "canWrite": False}]},
         )
@@ -434,12 +657,12 @@ class ApiSmokeTests(unittest.TestCase):
         allowed_after = self.client.get(
             "/tables/tbl_1/records",
             headers=member_headers,
-            params={"viewId": "viw_1", "pageSize": 5},
+            params={"viewId": self.tbl1_view_id, "pageSize": 5},
         )
         self.assertEqual(allowed_after.status_code, 200)
 
         lock_view = self.client.put(
-            "/views/viw_1/permissions",
+            f"/views/{self.tbl1_view_id}/permissions",
             headers=self.headers,
             json={"items": [{"userId": member_user_id, "canRead": False, "canWrite": False}]},
         )
@@ -448,7 +671,7 @@ class ApiSmokeTests(unittest.TestCase):
         denied = self.client.get(
             "/tables/tbl_1/records",
             headers=member_headers,
-            params={"viewId": "viw_1", "pageSize": 5},
+            params={"viewId": self.tbl1_view_id, "pageSize": 5},
         )
         self.assertEqual(denied.status_code, 403)
         with db_context() as db:
@@ -457,7 +680,7 @@ class ApiSmokeTests(unittest.TestCase):
                 .where(
                     AuditLogModel.action == "view_permission_denied",
                     AuditLogModel.resource_type == "view",
-                    AuditLogModel.resource_id == "viw_1",
+                    AuditLogModel.resource_id == self.tbl1_view_id,
                 )
                 .order_by(AuditLogModel.id.desc())
             )
@@ -510,6 +733,42 @@ class ApiSmokeTests(unittest.TestCase):
 
         denied = self.client.delete("/tenants/current/members/usr_owner", headers=manager_headers)
         self.assertEqual(denied.status_code, 403)
+
+    def test_seed_backfills_missing_permissions_for_admin_role(self) -> None:
+        username = f"manager_{uuid4().hex[:6]}"
+        user_id = f"usr_{uuid4().hex[:10]}"
+        with db_context() as db:
+            user = UserModel(
+                id=user_id,
+                username=username,
+                account=username,
+                password_hash=hash_password("member123456"),
+                email=None,
+                mobile=None,
+                must_change_password=False,
+                default_tenant_id="tenant_default",
+                created_at=now_utc_naive(),
+            )
+            membership = MembershipModel(
+                user_id=user_id,
+                tenant_id="tenant_default",
+                role="member",
+                role_key="admin",
+                created_at=now_utc_naive(),
+            )
+            db.add_all([user, membership])
+            db.commit()
+            ensure_seed_data(db)
+
+        login_resp = self.client.post("/auth/login", json={"username": username, "password": "member123456"})
+        self.assertEqual(login_resp.status_code, 200)
+        manager_headers = {"Authorization": f"Bearer {login_resp.json()['accessToken']}"}
+
+        tables_resp = self.client.get("/bases/base_1/tables", headers=manager_headers)
+        self.assertEqual(tables_resp.status_code, 200)
+        items = tables_resp.json()
+        self.assertTrue(items)
+        self.assertTrue(any(item.get("defaultViewId") for item in items))
 
     def test_non_owner_query_records_without_view_id_returns_400(self) -> None:
         member_user_id, member_token = self._ensure_member_and_login()
